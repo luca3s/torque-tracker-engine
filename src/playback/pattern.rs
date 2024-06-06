@@ -1,60 +1,48 @@
 use std::num::NonZeroU8;
 
-use super::constants::MAX_PATTERNS;
+use crate::playback::event::Event;
+use left_right::new;
 
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Event {
-    pub note: u8,
-    pub instr: u8,
-    pub vol: VolumeEffect,
-    pub command: Option<(NonZeroU8, u8)>,
+use super::constants::{MAX_PATTERNS, MAX_PATTERN_LEN};
+
+/// Eq and ord impls only compare the row and channel
+/// both row and channel are zero based. If this ever changes a lot of the implementations of
+/// Patter need to be changed, because the searching starts working differently
+#[derive(Clone, Copy, Debug)]
+pub struct PatternPosition {
+    pub row: u16,
+    pub channel: u8,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub enum VolumeEffect {
-    FineVolSlideUp(u8),
-    FineVolSlideDown(u8),
-    VolSlideUp(u8),
-    VolSlideDown(u8),
-    PitchSlideUp(u8),
-    PitchSlideDown(u8),
-    SlideToNoteWithSpeed(u8),
-    VibratoWithSpeed(u8),
-    Volume(u8),
-    Panning(u8),
-    /// Uses Instr / Sample Default Volume
-    #[default]
-    None,
-}
-
-impl TryFrom<u8> for VolumeEffect {
-    type Error = u8;
-
-    /// IT Tracker Format Conversion
-    /// no way to get None, as then it just doesn't get set
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            0..=64 => Ok(Self::Volume(value)),
-            65..=74 => Ok(Self::FineVolSlideUp(value - 65)),
-            75..=84 => Ok(Self::FineVolSlideDown(value - 75)),
-            85..=94 => Ok(Self::VolSlideUp(value - 85)),
-            95..=104 => Ok(Self::VolSlideDown(value - 95)),
-            105..=114 => Ok(Self::PitchSlideDown(value - 105)),
-            115..=124 => Ok(Self::PitchSlideUp(value - 115)),
-            128..=192 => Ok(Self::Panning(value - 128)),
-            193..=202 => Ok(Self::SlideToNoteWithSpeed(value - 193)),
-            203..=212 => Ok(Self::VibratoWithSpeed(value - 203)),
-            _ => Err(value),
-        }
+impl PartialEq for PatternPosition {
+    fn eq(&self, other: &Self) -> bool {
+        self.row == other.row && self.channel == other.channel
     }
 }
 
-pub type Row = Vec<(u8, Event)>;
+impl Eq for PatternPosition {}
 
+impl PartialOrd for PatternPosition {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for PatternPosition {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match self.row.cmp(&other.row) {
+            core::cmp::Ordering::Equal => {}
+            ord => return ord,
+        }
+        self.channel.cmp(&other.channel)
+    }
+}
+
+// Events are sorted with the row number as first and channel number as second key.
 #[derive(Clone, Debug)]
 pub struct Pattern {
-    // rows: Vec<Row>,
-    pub rows: Box<[Row]>,
+    num_rows: u16,
+    data: Vec<(PatternPosition, Event)>,
 }
 
 impl Default for Pattern {
@@ -64,73 +52,76 @@ impl Default for Pattern {
 }
 
 impl Pattern {
-    const DEFAULT_ROWS: usize = 64;
+    const MAX_LEN: u16 = MAX_PATTERN_LEN;
 
-    pub fn new(rows: usize) -> Self {
+    const DEFAULT_ROWS: u16 = 64;
+
+    pub fn new(len: u16) -> Self {
         Self {
-            rows: vec![Row::default(); rows].into_boxed_slice(),
+            num_rows: len,
+            data: Vec::new(),
         }
     }
 
-    pub fn set_length(&mut self, new_len: usize) {
-        let vec = match new_len.cmp(&self.rows.len()) {
-            std::cmp::Ordering::Less => {
-                let mut vec: Vec<Row> = Vec::with_capacity(new_len);
-                for row in &mut self.rows[0..new_len] {
-                    vec.push(std::mem::take(row));
-                }
-                vec
-            }
-            std::cmp::Ordering::Equal => return,
-            std::cmp::Ordering::Greater => {
-                let mut vec: Vec<Row> = Vec::with_capacity(new_len);
-                for row in self.rows.iter_mut() {
-                    vec.push(std::mem::take(row));
-                }
-                for _ in self.rows.len()..new_len {
-                    vec.push(Vec::new());
-                }
-                vec
-            }
-        };
-
-        self.rows = vec.into_boxed_slice();
+    /// panics it the new len is larger than 'Self::MAX_LEN'
+    /// deletes the data on higher rows
+    pub fn set_length(&mut self, new_len: u16) {
+        assert!(new_len <= Self::MAX_LEN);
+        // gets the index of the first element of the first row to be removed
+        let idx = self
+            .data
+            .binary_search_by_key(
+                &PatternPosition {
+                    row: new_len,
+                    channel: 0,
+                },
+                |(pos, _)| *pos,
+            )
+            .unwrap_or_else(|i| i);
+        self.data.truncate(idx);
+        self.num_rows = new_len;
     }
 
-    pub fn set_event(&mut self, row: usize, channel: u8, event: Event) {
-        let new_event = event;
-        if let Some((_, event)) = self.rows[row].iter_mut().find(|(c, _)| *c == channel) {
-            *event = new_event;
-        } else {
-            self.rows[row].push((channel, new_event));
+    /// overwrites the event if the row already has an event for that channel
+    pub fn set_event(&mut self, position: PatternPosition, event: Event) {
+        match self.data.binary_search_by_key(&position, |(pos, _)| *pos) {
+            Ok(idx) => self.data[idx].1 = event,
+            Err(idx) => self.data.insert(idx, (position, event)),
         }
     }
 
     /// if there is no event, does nothing
-    pub fn remove_event(&mut self, row: usize, channel: u8) {
-        let i = self.rows[row].iter().position(|(c, _)| *c == channel);
-        if let Some(i) = i {
-            self.rows[row].swap_remove(i);
+    pub fn remove_event(&mut self, position: PatternPosition) {
+        if let Ok(index) = self.data.binary_search_by_key(&position, |(pos, _)| *pos) {
+            self.data.remove(index);
         }
     }
+
+    pub fn get_row_count(&self) -> u16 {
+        self.num_rows
+    }
+
+    // fn sort(&mut self) {
+    //     self.data.sort_unstable_by_key(|(pos, _)| *pos);
+    // }
 }
 
 /// assumes the Operations are correct (not out of bounds, ...)
 pub enum PatternOperation {
     Load(Box<[Pattern; MAX_PATTERNS]>),
-    SetLenght {
+    SetLength {
         pattern: usize,
-        new_len: usize,
+        new_len: u16,
     },
     SetEvent {
         pattern: usize,
-        row: usize,
+        row: u16,
         channel: u8,
         event: Event,
     },
     RemoveEvent {
         pattern: usize,
-        row: usize,
+        row: u16,
         channel: u8,
     },
 }
@@ -141,22 +132,31 @@ impl left_right::Absorb<PatternOperation> for [Pattern; MAX_PATTERNS] {
         let operation: &PatternOperation = operation;
         match operation {
             PatternOperation::Load(patterns) => *self = *patterns.clone(),
-            PatternOperation::SetLenght { pattern, new_len } => self[*pattern].set_length(*new_len),
+            PatternOperation::SetLength { pattern, new_len } => self[*pattern].set_length(*new_len),
             PatternOperation::SetEvent {
                 pattern,
                 row,
                 channel,
                 event,
-            } => self[*pattern].set_event(*row, *channel, *event),
+            } => self[*pattern].set_event(
+                PatternPosition {
+                    row: *row,
+                    channel: *channel,
+                },
+                *event,
+            ),
             PatternOperation::RemoveEvent {
                 pattern,
                 row,
                 channel,
-            } => self[*pattern].remove_event(*row, *channel),
+            } => self[*pattern].remove_event(PatternPosition {
+                row: *row,
+                channel: *channel,
+            }),
         }
     }
 
     fn sync_with(&mut self, first: &Self) {
-        *self = first.clone()
+        self.clone_from(first)
     }
 }

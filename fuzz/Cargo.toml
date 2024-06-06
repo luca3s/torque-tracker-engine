@@ -1,0 +1,42 @@
+[package]
+name = "impulse-engine-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.impulse-engine]
+path = ".."
+
+[[bin]]
+name = "header"
+path = "fuzz_targets/header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pattern"
+path = "fuzz_targets/pattern.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "full_load"
+path = "fuzz_targets/full_load.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sample"
+path = "fuzz_targets/sample.rs"
+test = false
+doc = false
+bench = false

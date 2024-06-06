@@ -8,3 +8,4 @@ pub const MAX_VOICES: usize = 256;
 pub const MAX_CHANNELS: usize = 64;
 pub const MAX_ENV_POINTS: u8 = 32;
 pub const MAX_INFONAME: u8 = 80;
+pub const MAX_PATTERN_LEN: u16 = 200;

@@ -1,5 +1,10 @@
-#[derive(Debug)]
+use crate::file::err;
+use crate::file::err::LoadDefects;
+use enumflags2::BitFlags;
+
+#[derive(Debug, Default)]
 enum NewNoteAction {
+    #[default]
     Cut = 0,
     Continue = 1,
     NoteOff = 2,
@@ -20,8 +25,9 @@ impl TryFrom<u8> for NewNoteAction {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 enum DuplicateCheckType {
+    #[default]
     Off = 0,
     Note = 1,
     Sample = 2,
@@ -42,8 +48,9 @@ impl TryFrom<u8> for DuplicateCheckType {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 enum DuplicateCheckAction {
+    #[default]
     Cut = 0,
     NoteOff = 1,
     NoteFade = 2,
@@ -89,33 +96,74 @@ pub struct ImpulseInstrument {
 
 impl ImpulseInstrument {
     /// size in file is 554 bytes
-    pub fn load(buf: &[u8]) -> Self {
-        assert_eq!(buf.len(), 554);
-        assert!(buf[0] == b'I');
-        assert!(buf[1] == b'M');
-        assert!(buf[2] == b'P');
-        assert!(buf[3] == b'I');
+    pub fn load(buf: &[u8]) -> Result<(Self, BitFlags<err::LoadDefects>), err::LoadErr> {
+        if buf.len() < 547 {
+            return Err(err::LoadErr::BufferTooShort);
+        }
+        if buf[0] != b'I' || buf[1] != b'M' || buf[2] != b'P' || buf[3] != b'I' {
+            return Err(err::LoadErr::Invalid);
+        }
 
+        let mut defects = BitFlags::empty();
+        // unwrap is okay as the slice length is const
         let dos_file_name: [u8; 12] = buf[0x04..=0x0F].try_into().unwrap();
 
-        assert_eq!(buf[0x10], 0);
-        let new_note_action = NewNoteAction::try_from(buf[0x11]).unwrap();
-        let duplicate_check_type = DuplicateCheckType::try_from(buf[0x12]).unwrap();
-        let duplicate_check_action = DuplicateCheckAction::try_from(buf[0x13]).unwrap();
+        if buf[10] != 0 {
+            return Err(err::LoadErr::Invalid);
+        }
+        let new_note_action = match NewNoteAction::try_from(buf[0x11]) {
+            Ok(nna) => nna,
+            Err(_) => {
+                defects.insert(LoadDefects::OutOfBoundsValue);
+                NewNoteAction::default()
+            }
+        };
+        let duplicate_check_type = match DuplicateCheckType::try_from(buf[0x12]) {
+            Ok(dct) => dct,
+            Err(_) => {
+                defects.insert(err::LoadDefects::OutOfBoundsValue);
+                DuplicateCheckType::default()
+            }
+        };
+        let duplicate_check_action = match DuplicateCheckAction::try_from(buf[0x13]) {
+            Ok(dca) => dca,
+            Err(_) => {
+                defects.insert(err::LoadDefects::OutOfBoundsValue);
+                DuplicateCheckAction::default()
+            }
+        };
         let fade_out = u16::from_le_bytes([buf[0x14], buf[0x15]]);
-        let pitch_pan_seperation = i8::from_le_bytes([buf[0x16]]);
-        assert!(pitch_pan_seperation >= -32);
-        assert!(pitch_pan_seperation <= 32);
-        let pitch_pan_center = buf[0x17];
-        assert!(pitch_pan_center <= 119);
-        let global_volume = buf[0x18];
-        assert!(global_volume <= 128);
+        let pitch_pan_seperation = {
+            let tmp = i8::from_le_bytes([buf[0x16]]);
+            if !(-32..=32).contains(&tmp) {
+                defects.insert(err::LoadDefects::OutOfBoundsValue);
+                0
+            } else {
+                tmp
+            }
+        };
+        let pitch_pan_center = if buf[0x17] <= 119 {
+            buf[0x17]
+        } else {
+            defects.insert(err::LoadDefects::OutOfBoundsValue);
+            59
+        };
+        let global_volume = if buf[0x18] <= 128 {
+            buf[0x18]
+        } else {
+            defects.insert(err::LoadDefects::OutOfBoundsValue);
+            64
+        };
+
         let default_pan = if buf[0x19] == 128 {
             None
+        } else if buf[0x19] > 64 {
+            defects.insert(err::LoadDefects::OutOfBoundsValue);
+            Some(32)
         } else {
-            assert!(buf[0x19] <= 64);
             Some(buf[0x19])
         };
+
         let random_volume = buf[0x1A];
         assert!(random_volume <= 100);
         let random_pan = buf[0x1B];
@@ -144,16 +192,16 @@ impl ImpulseInstrument {
             .try_into()
             .unwrap();
 
-        let volume_envelope = ImpulseEnvelope::load(&buf[0x130..0x182]);
-        let pan_envelope = ImpulseEnvelope::load(&buf[0x182..0x1D4]);
-        let pitch_envelope = ImpulseEnvelope::load(&buf[0x1D4..]);
+        let volume_envelope = ImpulseEnvelope::load(&buf[0x130..0x182])?;
+        let pan_envelope = ImpulseEnvelope::load(&buf[0x182..0x1D4])?;
+        let pitch_envelope = ImpulseEnvelope::load(&buf[0x1D4..])?;
 
         todo!()
     }
 }
 
-/// flags and node values are interpreted differently depending on the type of evelope.
-/// doesnt affect loading
+/// flags and node values are interpreted differently depending on the type of envelope.
+/// doesn't affect loading
 #[derive(Debug)]
 pub struct ImpulseEnvelope {
     flags: u8,
@@ -166,8 +214,10 @@ pub struct ImpulseEnvelope {
 }
 
 impl ImpulseEnvelope {
-    pub fn load(buf: &[u8]) -> Self {
-        assert_eq!(buf.len(), 82);
+    pub fn load(buf: &[u8]) -> Result<Self, err::LoadErr> {
+        if buf.len() < 82 {
+            return Err(err::LoadErr::BufferTooShort);
+        }
 
         let flags = buf[0];
         let num_node_points = buf[2];
@@ -176,15 +226,16 @@ impl ImpulseEnvelope {
         let sustain_loop_start = buf[5];
         let sustain_loop_end = buf[6];
 
-        // chunks_exact leaves remainder of one in this case but the value of that bit isnt being used
+        // chunks_exact leaves remainder of one in this case but the value of that bit isn't being used
         let nodes: [(u8, u16); 25] = buf[7..]
             .chunks_exact(3)
+            .take(25)
             .map(|chunk| (chunk[0], u16::from_le_bytes([chunk[1], chunk[2]])))
             .collect::<Vec<(u8, u16)>>()
             .try_into()
             .unwrap();
 
-        Self {
+        Ok(Self {
             flags,
             num_node_points,
             loop_start,
@@ -192,6 +243,6 @@ impl ImpulseEnvelope {
             sustain_loop_start,
             sustain_loop_end,
             nodes,
-        }
+        })
     }
 }

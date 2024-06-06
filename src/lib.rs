@@ -1,27 +1,18 @@
-pub mod file_formats;
+pub mod file;
 pub mod playback;
 
 #[cfg(test)]
 mod tests {
-pub fn add(left: usize, right: usize) -> usize {
-    left + right
-}
+    use std::path::Path;
 
-#[cfg(test)]
-mod tests {
     use super::*;
 
     #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+    fn load_test_1() {
+        dbg!(
+            "{:?}",
+            file::file_handling::load_file(Path::new("test-1.it")).unwrap()
+        );
+        // file_formats::file_handling::load_file(Path::new("test-1.it")).unwrap();
     }
 }

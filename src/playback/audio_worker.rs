@@ -1,15 +1,16 @@
 use std::sync::mpsc::{Receiver, TryRecvError};
 
+use crate::playback::event::Event;
 use basedrop::Shared;
 
 use super::{
     channel::Pan,
     constants::{MAX_CHANNELS, MAX_SAMPLES},
-    pattern::{Event, Pattern},
+    pattern::Pattern,
     sample::SampleData,
 };
 
-pub struct AudioWorker {
+struct AudioWorker {
     samples: [Option<Shared<SampleData>>; MAX_SAMPLES],
     pattern: left_right::ReadHandle<Pattern>,
     volume: [u8; MAX_CHANNELS],
@@ -20,7 +21,7 @@ pub struct AudioWorker {
 impl AudioWorker {
     pub fn update_self(&mut self) {
         match self.manager.try_recv() {
-            Ok(WorkerMsg::Sample { id, sample }) => self.samples[usize::from(id)] = sample,
+            Ok(WorkerMsg::SetSample { id, sample }) => self.samples[usize::from(id)] = sample,
             Ok(WorkerMsg::StopPlayback) => (),
             Ok(WorkerMsg::PlaybackFrom) => (),
             Ok(WorkerMsg::PlayEvent(_)) => (),
@@ -47,8 +48,8 @@ impl AudioWorker {
     pub fn silence(&mut self, buf: &mut [u8]) {}
 }
 
-pub enum WorkerMsg {
-    Sample {
+pub(crate) enum WorkerMsg {
+    SetSample {
         id: u8,
         sample: Option<Shared<SampleData>>,
     },
