@@ -1,12 +1,11 @@
-use crate::playback::event_command::Command;
-use std::num::NonZeroU8;
+use crate::song::event_command::NoteCommand;
 
 #[derive(Clone, Copy, Debug, Default)]
-pub struct Event {
+pub struct NoteEvent {
     pub note: u8,
-    pub instr: u8,
+    pub sample_instr: u8,
     pub vol: VolumeEffect,
-    pub command: Command,
+    pub command: NoteCommand,
 }
 
 #[derive(Debug, Clone, Copy, Default)]

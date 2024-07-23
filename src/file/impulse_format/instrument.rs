@@ -3,7 +3,7 @@ use crate::file::err::LoadDefects;
 use enumflags2::BitFlags;
 
 #[derive(Debug, Default)]
-enum NewNoteAction {
+pub enum NewNoteAction {
     #[default]
     Cut = 0,
     Continue = 1,
@@ -26,7 +26,7 @@ impl TryFrom<u8> for NewNoteAction {
 }
 
 #[derive(Debug, Default)]
-enum DuplicateCheckType {
+pub enum DuplicateCheckType {
     #[default]
     Off = 0,
     Note = 1,
@@ -49,7 +49,7 @@ impl TryFrom<u8> for DuplicateCheckType {
 }
 
 #[derive(Debug, Default)]
-enum DuplicateCheckAction {
+pub enum DuplicateCheckAction {
     #[default]
     Cut = 0,
     NoteOff = 1,
@@ -71,27 +71,27 @@ impl TryFrom<u8> for DuplicateCheckAction {
 
 #[derive(Debug)]
 pub struct ImpulseInstrument {
-    dos_file_name: [u8; 12],
-    new_note_action: NewNoteAction,
-    duplicate_check_type: DuplicateCheckType,
-    duplicate_check_action: DuplicateCheckAction,
-    fade_out: u16,
-    pitch_pan_seperation: i8,
-    pitch_pan_center: u8,
-    global_volume: u8,
-    default_pan: Option<u8>,
-    random_volume: u8,
-    random_panning: u8,
-    created_with: u16,
-    number_of_samples: u8,
-    name: String,
-    initial_filter_cutoff: u8,
-    initial_filter_resonance: u8,
-    midi_channel: u8,
-    midi_prgram: u8,
-    midi_bank: u16,
-    note_sample_table: [(u8, u8); 120],
-    envelopes: [ImpulseEnvelope; 3],
+    pub dos_file_name: [u8; 12],
+    pub new_note_action: NewNoteAction,
+    pub duplicate_check_type: DuplicateCheckType,
+    pub duplicate_check_action: DuplicateCheckAction,
+    pub fade_out: u16,
+    pub pitch_pan_seperation: i8,
+    pub pitch_pan_center: u8,
+    pub global_volume: u8,
+    pub default_pan: Option<u8>,
+    pub random_volume: u8,
+    pub random_panning: u8,
+    pub created_with: u16,
+    pub number_of_samples: u8,
+    pub name: String,
+    pub initial_filter_cutoff: u8,
+    pub initial_filter_resonance: u8,
+    pub midi_channel: u8,
+    pub midi_prgram: u8,
+    pub midi_bank: u16,
+    pub note_sample_table: [(u8, u8); 120],
+    pub envelopes: [ImpulseEnvelope; 3],
 }
 
 impl ImpulseInstrument {

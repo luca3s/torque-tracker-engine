@@ -1,10 +1,10 @@
 #[derive(Debug, Default, Copy, Clone)]
-pub enum Command {
+pub enum NoteCommand {
     #[default]
     None,
 }
 
-impl TryFrom<(u8, u8)> for Command {
+impl TryFrom<(u8, u8)> for NoteCommand {
     type Error = (u8, u8);
 
     fn try_from(value: (u8, u8)) -> Result<Self, Self::Error> {

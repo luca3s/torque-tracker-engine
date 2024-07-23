@@ -1,8 +1,8 @@
 use crate::file::err;
 use crate::file::err::LoadDefects;
-use crate::playback::event::{Event, VolumeEffect};
-use crate::playback::event_command;
-use crate::playback::pattern::{Pattern, PatternPosition};
+use crate::song::event_command::NoteCommand;
+use crate::song::note_event::{NoteEvent, VolumeEffect};
+use crate::song::pattern::{InPatternPosition, Pattern};
 use enumflags2::BitFlags;
 
 pub fn load_pattern(buf: &[u8]) -> Result<(Pattern, BitFlags<LoadDefects>), err::LoadErr> {
@@ -11,29 +11,29 @@ pub fn load_pattern(buf: &[u8]) -> Result<(Pattern, BitFlags<LoadDefects>), err:
     if buf.len() < PATTERN_HEADER_SIZE {
         return Err(err::LoadErr::BufferTooShort);
     }
-    // byte length of the pattern in the file
-    let length = u16::from_le_bytes([buf[0], buf[1]]);
-    if buf.len() != usize::from(length) + PATTERN_HEADER_SIZE {
+    let length = usize::from(u16::from_le_bytes([buf[0], buf[1]])) + PATTERN_HEADER_SIZE;
+    if buf.len() < length {
         return Err(err::LoadErr::BufferTooShort);
     }
-    if usize::from(length) + PATTERN_HEADER_SIZE >= 64_000 {
+    // a guarantee given by the impulse tracker "specs"
+    if length >= 64_000 {
         return Err(err::LoadErr::Invalid);
     }
     let num_rows_header = u16::from_le_bytes([buf[2], buf[3]]);
-    if num_rows_header < 32 || num_rows_header < 200 {
+    if !(32..=200).contains(&num_rows_header) {
         return Err(err::LoadErr::Invalid);
     }
 
     let mut pattern = Pattern::new(num_rows_header);
 
-    let mut read_pointer = 8;
+    let mut read_pointer: usize = PATTERN_HEADER_SIZE;
     let mut row_num: u16 = 0;
     let mut defects = BitFlags::empty();
 
     let mut last_mask = [0; 64];
-    let mut last_event = [Event::default(); 64];
+    let mut last_event = [NoteEvent::default(); 64];
 
-    while row_num <= num_rows_header {
+    while row_num < num_rows_header && read_pointer < length {
         let channel_variable = *buf.get(read_pointer).ok_or(err::LoadErr::BufferTooShort)?;
         read_pointer += 1;
 
@@ -45,7 +45,7 @@ pub fn load_pattern(buf: &[u8]) -> Result<(Pattern, BitFlags<LoadDefects>), err:
         let channel = (channel_variable - 1) & 63; // 64 channels, 0 based
         let channel_id = usize::from(channel);
 
-        let maskvariable = if (channel_variable & 0b10000000) != 0 {
+        let maskvar = if (channel_variable & 0b10000000) != 0 {
             let val = *buf.get(read_pointer).ok_or(err::LoadErr::BufferTooShort)?;
             last_mask[channel_id] = val;
             read_pointer += 1;
@@ -54,10 +54,10 @@ pub fn load_pattern(buf: &[u8]) -> Result<(Pattern, BitFlags<LoadDefects>), err:
             last_mask[channel_id]
         };
 
-        let mut event = Event::default();
+        let mut event = NoteEvent::default();
 
         // Note
-        if (maskvariable & 0b00000001) != 0 {
+        if (maskvar & 0b00000001) != 0 {
             let note = *buf.get(read_pointer).ok_or(err::LoadErr::BufferTooShort)?;
             read_pointer += 1;
 
@@ -66,16 +66,16 @@ pub fn load_pattern(buf: &[u8]) -> Result<(Pattern, BitFlags<LoadDefects>), err:
         }
 
         // Instrument / Sample
-        if (maskvariable & 0b00000010) != 0 {
+        if (maskvar & 0b00000010) != 0 {
             let instrument = *buf.get(read_pointer).ok_or(err::LoadErr::BufferTooShort)?;
             read_pointer += 1;
 
-            event.instr = instrument;
-            last_event[channel_id].instr = instrument;
+            event.sample_instr = instrument;
+            last_event[channel_id].sample_instr = instrument;
         }
 
         // Volume
-        if (maskvariable & 0b00000100) != 0 {
+        if (maskvar & 0b00000100) != 0 {
             let vol_pan_raw = *buf.get(read_pointer).ok_or(err::LoadErr::BufferTooShort)?;
             read_pointer += 1;
             let vol_pan = match vol_pan_raw.try_into() {
@@ -91,17 +91,17 @@ pub fn load_pattern(buf: &[u8]) -> Result<(Pattern, BitFlags<LoadDefects>), err:
         }
 
         // Effect
-        if (maskvariable & 0b00001000) != 0 {
+        if (maskvar & 0b00001000) != 0 {
             let command = *buf.get(read_pointer).ok_or(err::LoadErr::BufferTooShort)?;
             read_pointer += 1;
             let cmd_val = *buf.get(read_pointer).ok_or(err::LoadErr::BufferTooShort)?;
             read_pointer += 1;
 
-            let cmd = match event_command::Command::try_from((command, cmd_val)) {
+            let cmd = match NoteCommand::try_from((command, cmd_val)) {
                 Ok(cmd) => cmd,
                 Err(_) => {
                     defects.insert(LoadDefects::UnknownEffect);
-                    event_command::Command::default()
+                    NoteCommand::default()
                 }
             };
             last_event[channel_id].command = cmd;
@@ -110,27 +110,27 @@ pub fn load_pattern(buf: &[u8]) -> Result<(Pattern, BitFlags<LoadDefects>), err:
         }
 
         // Same note
-        if (maskvariable & 0b00010000) != 0 {
+        if (maskvar & 0b00010000) != 0 {
             event.note = last_event[channel_id].note;
         }
 
         // Same Instr / Sample
-        if (maskvariable & 0b00100000) != 0 {
-            event.instr = last_event[channel_id].instr;
+        if (maskvar & 0b00100000) != 0 {
+            event.sample_instr = last_event[channel_id].sample_instr;
         }
 
         // Same volume
-        if (maskvariable & 0b01000000) != 0 {
+        if (maskvar & 0b01000000) != 0 {
             event.vol = last_event[channel_id].vol;
         }
 
         // Same Command
-        if (maskvariable & 0b10000000) != 0 {
+        if (maskvar & 0b10000000) != 0 {
             event.command = last_event[channel_id].command;
         }
 
         pattern.set_event(
-            PatternPosition {
+            InPatternPosition {
                 row: row_num,
                 channel,
             },

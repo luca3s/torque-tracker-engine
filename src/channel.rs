@@ -1,4 +1,4 @@
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum Pan {
     /// Value ranges from 0 to 64, with 32 being center
     Value(u8),

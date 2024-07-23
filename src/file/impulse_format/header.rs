@@ -1,17 +1,14 @@
-use crate::{
-    file::err::{self, LoadDefects},
-    playback::channel::Pan,
-};
-use std::num::{NonZeroU32, NonZeroUsize};
-use std::usize;
+use crate::file::err::{self, LoadDefects};
+use std::num::NonZeroUsize;
 
+use crate::channel::Pan;
 use enumflags2::{BitFlag, BitFlags};
 
-#[derive(Debug, Default)]
-enum PatternOrder {
+#[derive(Debug, Default, Clone, Copy)]
+pub enum PatternOrder {
     Number(u8),
-    EndOfSong,
     #[default]
+    EndOfSong,
     NextOrder,
 }
 
@@ -30,27 +27,27 @@ impl TryFrom<u8> for PatternOrder {
 
 #[derive(Debug)]
 pub struct ImpulseHeader {
-    song_name: String,
-    philight: u16,
+    pub song_name: String,
+    pub philight: u16,
 
-    created_with: u16,
-    compatible_with: u16,
-    flags: u16,
-    special: u16,
+    pub created_with: u16,
+    pub compatible_with: u16,
+    pub flags: u16,
+    pub special: u16,
 
-    global_volume: u8,
-    mix_volume: u8,
-    initial_speed: u8,
-    initial_tempo: u8,
-    pan_separation: u8,
-    pitch_wheel_depth: u8,
-    message_length: u16,
-    message_offset: u32,
+    pub global_volume: u8,
+    pub mix_volume: u8,
+    pub initial_speed: u8,
+    pub initial_tempo: u8,
+    pub pan_separation: u8,
+    pub pitch_wheel_depth: u8,
+    pub message_length: u16,
+    pub message_offset: u32,
 
-    channel_pan: [Pan; 64],
-    channel_volume: [u8; 64],
+    pub channel_pan: [Pan; 64],
+    pub channel_volume: [u8; 64],
 
-    orders: Box<[PatternOrder]>, // length is oder_num
+    pub orders: Box<[PatternOrder]>, // length is oder_num
 
     /// all Offsets are verified to be point outside the header
     /// Invalid offsets are replaced with None, so patterns or orders don't break, because the indexes change
@@ -78,17 +75,13 @@ impl ImpulseHeader {
 
         let mut defects = LoadDefects::empty();
 
-        let c_str_name: Vec<u8> = buf[0x04..=0x1D]
-            .iter()
-            .take_while(|b| **b != 0)
-            .copied()
-            .collect();
-        let song_name = match String::from_utf8(c_str_name) {
-            Ok(s) => s,
-            Err(_) => {
+        let song_name = {
+            let str = buf[0x14..=0x2D].split(|b| *b == 0).next().unwrap().to_vec();
+            let str = String::from_utf8(str);
+            if str.is_err() {
                 defects.insert(LoadDefects::InvalidText);
-                String::new()
             }
+            str.unwrap_or_default()
         };
 
         let philight = u16::from_le_bytes([buf[0x1E], buf[0x1F]]);
