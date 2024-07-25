@@ -3,7 +3,7 @@ use std::{
     cell::UnsafeCell,
     collections::VecDeque,
     sync::{
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicU8, Ordering},
         Arc,
     },
 };
@@ -21,21 +21,27 @@ where
     O: Clone,
 {
     /// never blocks. only really performs a swap when at least one operation was performed
+    // drops WriteGuard, because when swapping maybe it isn't possible to hold a writeguard
     pub fn swap(self) {
         self.writer.swap()
     }
 
-    /// applies operation to the current write Buffer and stores it to apply to the other later
-    #[inline]
+    /// applies operation to the current write Buffer and stores it to apply to the other later.
+    /// If there is no reader the operation is applied to both values immediately and not stored
     pub fn apply_op(&mut self, operation: O) {
-        // SAFETY: When creating the writeguad it is checked that the reader doesnt have access to the same data
-        // This function requires &mut self so there also isn't any ref created by writeguard.
-        self.get_data_mut().absorb(operation.clone());
-        self.writer.op_buffer.push_back(operation);
+        match Arc::get_mut(&mut self.writer.shared) {
+            Some(inner) => {
+                inner.value_1.get_mut().absorb(operation.clone());
+                inner.value_2.get_mut().absorb(operation);
+            },
+            None => {
+                self.get_data_mut().absorb(operation.clone());
+                self.writer.op_buffer.push_back(operation);
+            },
+        }
     }
 
     /// syncs the two values with the operation Buffer
-    #[inline]
     fn new_after_swap(writer: &'a mut Writer<T, O>) -> WriteGuard<'a, T, O> {
         writer.just_swapped = false;
         let mut guard = Self { writer };
@@ -46,6 +52,8 @@ where
     }
 
     fn get_data_mut(&'b mut self) -> &'b mut T {
+        // SAFETY: When creating the writeguad it is checked that the reader doesnt have access to the same data
+        // This function requires &mut self so there also isn't any ref created by writeguard.
         unsafe {
             self.writer
                 .shared
@@ -54,10 +62,6 @@ where
                 .as_mut()
                 .unwrap()
         }
-    }
-
-    pub fn to_writer(self) -> &'a mut Writer<T, O> {
-        self.writer
     }
 }
 
@@ -86,6 +90,8 @@ pub struct Writer<T: Absorb<O>, O: Clone> {
 impl<T: Absorb<O>, O: Clone> Writer<T, O> {
     /// blocks if the Reader has a ReadGuard pointing to the old value
     pub fn lock<'a>(&'a mut self) -> WriteGuard<'a, T, O> {
+        let backoff = crossbeam::utils::Backoff::new();
+
         loop {
             // operation has to be aquire, but only the time it breaks the loop
             let state = self.shared.state.load(Ordering::Relaxed);
@@ -97,14 +103,7 @@ impl<T: Absorb<O>, O: Clone> Writer<T, O> {
                 break;
             }
 
-            #[cfg(miri)]
-            {
-                std::hint::spin_loop();
-                std::thread::yield_now();
-            }
-
-            #[cfg(not(miri))]
-            atomic_wait::wait(&self.shared.state, state);
+            backoff.snooze();
         }
 
         if self.just_swapped {
@@ -161,7 +160,7 @@ impl<T: Absorb<O> + Clone, O: Clone> Writer<T, O> {
         let inner = Shared {
             value_1: UnsafeCell::new(value.clone()),
             value_2: UnsafeCell::new(value),
-            state: AtomicU32::new(0b000), // read from 0, no reads currently
+            state: AtomicU8::new(0b000), // read from 0, no reads currently
         };
         // set value 2 to be written to
         Writer {
@@ -207,7 +206,7 @@ impl<T: Absorb<O> + Default, O: Clone> Writer<T, O> {
         let shared = Shared {
             value_1: UnsafeCell::new(T::default()),
             value_2: UnsafeCell::new(T::default()),
-            state: AtomicU32::new(0b000),
+            state: AtomicU8::new(0b000),
         };
         Writer {
             shared: Arc::new(shared),
@@ -243,7 +242,6 @@ impl<T: Absorb<O> + Default, O: Clone> Writer<T, O> {
 }
 
 impl<T: Absorb<O>, O: Clone> AsRef<T> for Writer<T, O> {
-    #[inline]
     fn as_ref(&self) -> &T {
         // SAFETY: Only the WriteGuard can write to the values / create mut refs to them.
         // The WriteGuard holds a mut ref to the writer so this function can't be called while a writeguard exists

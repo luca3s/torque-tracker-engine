@@ -2,7 +2,7 @@ use std::cell::UnsafeCell;
 use std::ops::Deref;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::{marker::PhantomData, sync::atomic::AtomicU32};
+use std::{marker::PhantomData, sync::atomic::AtomicU8};
 
 use crate::{Ptr, Shared};
 
@@ -10,7 +10,7 @@ use crate::{Ptr, Shared};
 #[derive(Debug)]
 pub struct ReadGuard<'a, T> {
     data: &'a UnsafeCell<T>,
-    state: &'a AtomicU32,
+    state: &'a AtomicU8,
     // PhantomData makes the borrow checker prove that there only ever is one ReadGuard
     // This is needed because on Drop the ReadGuard sets current_read to None
     reader: PhantomData<&'a mut Reader<T>>,
@@ -41,8 +41,6 @@ impl<T> Drop for ReadGuard<'_, T> {
     fn drop(&mut self) {
         // release the read lock
         self.state.fetch_and(0b100, Ordering::Release);
-        #[cfg(not(miri))]
-        atomic_wait::wake_one(self.state);
     }
 }
 

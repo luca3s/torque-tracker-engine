@@ -1,4 +1,4 @@
-use std::{cell::UnsafeCell, hint::unreachable_unchecked, sync::atomic::AtomicU32};
+use std::{cell::UnsafeCell, hint::unreachable_unchecked, sync::atomic::AtomicU8};
 
 pub mod reader;
 pub mod writer;
@@ -19,9 +19,9 @@ impl Ptr {
     }
 }
 
-impl From<u32> for Ptr {
+impl From<u8> for Ptr {
     #[inline]
-    fn from(value: u32) -> Self {
+    fn from(value: u8) -> Self {
         match value & 0b100 {
             0b000 => Self::Value1,
             0b100 => Self::Value2,
@@ -58,9 +58,9 @@ impl From<Ptr> for ReadState {
     }
 }
 
-impl From<u32> for ReadState {
+impl From<u8> for ReadState {
     #[inline]
-    fn from(value: u32) -> Self {
+    fn from(value: u8) -> Self {
         match value & 0b011 {
             0b00 => Self::None,
             0b01 => Self::Value(Ptr::Value1),
@@ -74,11 +74,10 @@ impl From<u32> for ReadState {
 struct Shared<T> {
     value_1: UnsafeCell<T>,
     value_2: UnsafeCell<T>,
-    // u32, because atomic-wait (futex) only works on AtomicU32.
     // bit 0: is value 1 being read?
     // bit 1: is value 2 being read?
     // bit 3: which value should be read next (0: value 1, 1: value 2)
-    state: AtomicU32,
+    state: AtomicU8,
 }
 
 unsafe impl<T: Send> Send for Shared<T> {}
