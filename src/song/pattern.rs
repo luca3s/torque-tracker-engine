@@ -11,6 +11,10 @@ pub struct InPatternPosition {
     pub channel: u8,
 }
 
+const fn key(data: &(InPatternPosition, NoteEvent)) -> InPatternPosition {
+    data.0
+}
+
 #[cfg(test)]
 mod test {
     use crate::song::pattern::InPatternPosition;
@@ -26,7 +30,7 @@ mod test {
 #[derive(Clone, Debug)]
 pub struct Pattern {
     rows: u16,
-    data: Vec<(InPatternPosition, NoteEvent)>,
+    pub data: Vec<(InPatternPosition, NoteEvent)>,
 }
 
 impl Default for Pattern {
@@ -71,7 +75,7 @@ impl Pattern {
 
     /// overwrites the event if the row already has an event for that channel
     pub fn set_event(&mut self, position: InPatternPosition, event: NoteEvent) {
-        match self.data.binary_search_by_key(&position, |(pos, _)| *pos) {
+        match self.data.binary_search_by_key(&position, key) {
             Ok(idx) => self.data[idx].1 = event,
             Err(idx) => self.data.insert(idx, (position, event)),
         }
@@ -91,11 +95,17 @@ impl Pattern {
     // fn sort(&mut self) {
     //     self.data.sort_unstable_by_key(|(pos, _)| *pos);
     // }
+
+    // pub fn get_row(&self, row: u16) -> &[(InPatternPosition, NoteEvent)] {
+    //     let start_position = InPatternPosition { row, channel: 0};
+    //     let end_position = InPatternPosition { row: row + 1, channel: 0 };
+    //     let start_positon = self.data.binary_search_by_key(&start_position, key);
+    // }
 }
 
 /// assumes the Operations are correct (not out of bounds, ...)
 pub enum PatternOperation {
-    Load(Box<[Pattern; Song::MAX_PATTERNS]>),
+    Load(Box<[Pattern; Song::<crate::sample::SampleData>::MAX_PATTERNS]>),
     SetLength {
         pattern: usize,
         new_len: u16,

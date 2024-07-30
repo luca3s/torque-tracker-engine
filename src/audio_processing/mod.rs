@@ -54,6 +54,12 @@ impl std::ops::AddAssign<Frame> for f32 {
     }
 }
 
+impl std::iter::Sum for Frame {
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.reduce(|acc, x| acc + x).unwrap_or_default()
+    }
+}
+
 impl From<[f32; 2]> for Frame {
     fn from(value: [f32; 2]) -> Self {
         Self(value)

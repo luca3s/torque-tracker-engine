@@ -1,4 +1,4 @@
-use std::{num::NonZeroU16, time::Duration};
+use std::num::NonZeroU16;
 
 use basedrop::{Collector, Handle, Shared};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -7,21 +7,21 @@ use crate::{
     channel::Pan,
     live_audio::{AudioMsgConfig, FromWorkerMsg, LiveAudio, ToWorkerMsg},
     sample::{SampleData, SampleMetaData},
-    song::song::{InternalSong, Song, SongOperation},
+    song::song::{Song, SongOperation},
 };
 
 pub struct AudioManager {
-    song: simple_left_right::writer::Writer<InternalSong, SongOperation>,
+    song: simple_left_right::writer::Writer<Song<Shared<SampleData>>, SongOperation>,
     gc: Collector,
     gc_handle: Handle,
     stream: Option<(cpal::Stream, std::sync::mpsc::Sender<ToWorkerMsg>)>,
 }
 
 impl AudioManager {
-    pub fn new(song: Song) -> Self {
+    pub fn new(song: Song<SampleData>) -> Self {
         let gc = basedrop::Collector::new();
         let gc_handle = gc.handle();
-        let left_right = simple_left_right::writer::Writer::new(song.to_internal(&gc_handle));
+        let left_right = simple_left_right::writer::Writer::new(song.to_gc(&gc_handle));
 
         Self {
             song: left_right,
@@ -101,26 +101,26 @@ impl AudioManager {
 // need manuallyDrop because i need consume on drop behaviour
 pub struct SongEdit<'a> {
     song: std::mem::ManuallyDrop<
-        simple_left_right::writer::WriteGuard<'a, InternalSong, SongOperation>,
+        simple_left_right::writer::WriteGuard<'a, Song<Shared<SampleData>>, SongOperation>,
     >,
     gc_handle: &'a Handle,
 }
 
 impl SongEdit<'_> {
     pub fn set_sample(&mut self, num: usize, meta: SampleMetaData, data: SampleData) {
-        assert!(num < Song::MAX_SAMPLES);
+        assert!(num < Song::<SampleData>::MAX_SAMPLES);
         let op = SongOperation::SetSample(num, meta, Shared::new(self.gc_handle, data));
         self.song.apply_op(op);
     }
 
     pub fn set_volume(&mut self, channel: usize, volume: u8) {
-        assert!(channel < Song::MAX_CHANNELS);
+        assert!(channel < Song::<SampleData>::MAX_CHANNELS);
         let op = SongOperation::SetVolume(channel, volume);
         self.song.apply_op(op);
     }
 
     pub fn set_pan(&mut self, channel: usize, pan: Pan) {
-        assert!(channel < Song::MAX_CHANNELS);
+        assert!(channel < Song::<SampleData>::MAX_CHANNELS);
         let op = SongOperation::SetPan(channel, pan);
         self.song.apply_op(op);
     }

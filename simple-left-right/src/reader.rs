@@ -46,7 +46,6 @@ impl<T> Drop for ReadGuard<'_, T> {
 
 /// Dropping the Reader isn't realtime safe, because if dropped after the Writer, it deallocates.
 /// Should only get dropped, when closing the real-time thread
-/// Should never be leaked as that would (obviously) leak memory, but also stop the creation of a new Reader
 ///
 /// Reader will be able to read data even if Writer has been dropped. Obviously that data won't change anymore
 /// When there is no Reader the Writer is able to create a new one. The other way around doesn't work

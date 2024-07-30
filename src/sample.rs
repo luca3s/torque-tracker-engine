@@ -1,7 +1,34 @@
+use std::ops::Deref;
+
+use basedrop::Shared;
+
 use crate::file::impulse_format::sample::VibratoWave;
 
-#[derive(Clone, Debug)]
+/// used to make the playback generic over garbage collected pointers and normal references
+pub trait GetSampleRef<'a>: Send {
+    type SampleRef: Deref<Target = SampleData>;
+
+    fn get_sample_ref(&'a self) -> Self::SampleRef;
+}
+
+impl GetSampleRef<'_> for Shared<SampleData> {
+    type SampleRef = Shared<SampleData>;
+
+    fn get_sample_ref(&self) -> Self::SampleRef {
+        self.clone()
+    }
+}
+
+impl<'a> GetSampleRef<'a> for SampleData {
+    type SampleRef = &'a SampleData;
+
+    fn get_sample_ref(&'a self) -> Self::SampleRef {
+        self
+    }
+}
+
 /// samples need to be padded with PAD_SIZE frames at the start and end
+#[derive(Clone, Debug)]
 pub enum SampleData {
     Mono(Box<[f32]>),
     Stereo(Box<[[f32; 2]]>),
@@ -59,7 +86,7 @@ impl FromIterator<[f32; 2]> for SampleData {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct SampleMetaData {
     pub default_volume: u8,
     pub global_volume: u8,

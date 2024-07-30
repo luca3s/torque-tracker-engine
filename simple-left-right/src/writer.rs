@@ -8,50 +8,18 @@ use std::{
     },
 };
 
-pub struct WriteGuard<'a, T: Absorb<O>, O: Clone> {
+pub struct WriteGuard<'a, T, O> {
     writer: &'a mut Writer<T, O>,
 }
 
-// a: ref to writer that writeguard holds onto
-// b: ref to data that writeguard gives out
-// a outlives b
-impl<'a: 'b, 'b, T, O> WriteGuard<'a, T, O>
-where
-    T: Absorb<O>,
-    O: Clone,
-{
-    /// never blocks. only really performs a swap when at least one operation was performed
-    // drops WriteGuard, because when swapping maybe it isn't possible to hold a writeguard
+impl<T, O> WriteGuard<'_, T, O> {
+    /// see swap on Writer.
+    /// drops WriteGuard, because the creation of a new WriteGuard has to wait for the Reader to drop his ReadGuard.
     pub fn swap(self) {
         self.writer.swap()
     }
 
-    /// applies operation to the current write Buffer and stores it to apply to the other later.
-    /// If there is no reader the operation is applied to both values immediately and not stored
-    pub fn apply_op(&mut self, operation: O) {
-        match Arc::get_mut(&mut self.writer.shared) {
-            Some(inner) => {
-                inner.value_1.get_mut().absorb(operation.clone());
-                inner.value_2.get_mut().absorb(operation);
-            },
-            None => {
-                self.get_data_mut().absorb(operation.clone());
-                self.writer.op_buffer.push_back(operation);
-            },
-        }
-    }
-
-    /// syncs the two values with the operation Buffer
-    fn new_after_swap(writer: &'a mut Writer<T, O>) -> WriteGuard<'a, T, O> {
-        writer.just_swapped = false;
-        let mut guard = Self { writer };
-        while let Some(operation) = guard.writer.op_buffer.pop_front() {
-            guard.get_data_mut().absorb(operation);
-        }
-        guard
-    }
-
-    fn get_data_mut(&'b mut self) -> &'b mut T {
+    fn get_data_mut(&mut self) -> &mut T {
         // SAFETY: When creating the writeguad it is checked that the reader doesnt have access to the same data
         // This function requires &mut self so there also isn't any ref created by writeguard.
         unsafe {
@@ -65,19 +33,42 @@ where
     }
 }
 
-// code should be able to read the current state. This will only be possible after the Op Buffer has been emptied, so it is also useful for debugging
-impl<T, O> AsRef<T> for WriteGuard<'_, T, O>
-where
-    T: Absorb<O>,
-    O: Clone,
-{
-    #[inline]
+impl<'a, T: Absorb<O>, O> WriteGuard<'a, T, O> {
+    /// syncs the two values with the operation Buffer
+    fn new_after_swap(writer: &'a mut Writer<T, O>) -> Self {
+        writer.just_swapped = false;
+        let mut guard = Self { writer };
+        while let Some(operation) = guard.writer.op_buffer.pop_front() {
+            guard.get_data_mut().absorb(operation);
+        }
+        guard
+    }
+}
+
+impl<T: Absorb<O>, O: Clone> WriteGuard<'_, T, O> {
+    /// applies operation to the current write Value and stores it to apply to the other later.
+    /// If there is no reader the operation is applied to both values immediately and not stored
+    pub fn apply_op(&mut self, operation: O) {
+        match Arc::get_mut(&mut self.writer.shared) {
+            Some(inner) => {
+                inner.value_1.get_mut().absorb(operation.clone());
+                inner.value_2.get_mut().absorb(operation);
+            }
+            None => {
+                self.get_data_mut().absorb(operation.clone());
+                self.writer.op_buffer.push_back(operation);
+            }
+        }
+    }
+}
+
+impl<T, O> AsRef<T> for WriteGuard<'_, T, O> {
     fn as_ref(&self) -> &T {
         self.writer.as_ref()
     }
 }
 
-pub struct Writer<T: Absorb<O>, O: Clone> {
+pub struct Writer<T, O> {
     shared: Arc<Shared<T>>,
     // sets which buffer the next write is applied to
     // write_ptr doesn't need to be Atomics as it only changes, when the Writer itself swaps
@@ -87,9 +78,38 @@ pub struct Writer<T: Absorb<O>, O: Clone> {
     just_swapped: bool,
 }
 
-impl<T: Absorb<O>, O: Clone> Writer<T, O> {
+impl<T, O> Writer<T, O> {
+    /// swaps the read and write values. If no changes were made since the last swap nothing happens. Never blocks
+    /// see also WriteGuard::swap, which is maybe a bit more ergonimic
+    pub fn swap(&mut self) {
+        if self.op_buffer.is_empty() {
+            return;
+        }
+
+        match self.write_ptr {
+            Ptr::Value1 => self.shared.state.fetch_and(0b011, Ordering::Release),
+            Ptr::Value2 => self.shared.state.fetch_or(0b100, Ordering::Release),
+        };
+
+        self.write_ptr.switch();
+        self.just_swapped = true;
+    }
+
+    /// get a Reader if none exists
+    pub fn build_reader(&mut self) -> Option<Reader<T>> {
+        if Arc::get_mut(&mut self.shared).is_some() {
+            Some(Reader {
+                inner: self.shared.clone(),
+            })
+        } else {
+            None
+        }
+    }
+}
+
+impl<'a, T: Absorb<O>, O: Clone> Writer<T, O> {
     /// blocks if the Reader has a ReadGuard pointing to the old value
-    pub fn lock<'a>(&'a mut self) -> WriteGuard<'a, T, O> {
+    pub fn lock(&'a mut self) -> WriteGuard<'a, T, O> {
         let backoff = crossbeam::utils::Backoff::new();
 
         loop {
@@ -114,7 +134,7 @@ impl<T: Absorb<O>, O: Clone> Writer<T, O> {
     }
 
     /// doesn't block. Returns None if the Reader has a ReadGuard pointing to the old value
-    pub fn try_lock<'a>(&'a mut self) -> Option<WriteGuard<'a, T, O>> {
+    pub fn try_lock(&'a mut self) -> Option<WriteGuard<'a, T, O>> {
         let state = self.shared.state.load(Ordering::Acquire);
 
         if ReadState::from(state).can_write(self.write_ptr) {
@@ -127,34 +147,9 @@ impl<T: Absorb<O>, O: Clone> Writer<T, O> {
             None
         }
     }
-
-    /// get a Reader if none exists
-    pub fn build_reader(&mut self) -> Option<Reader<T>> {
-        if Arc::get_mut(&mut self.shared).is_some() {
-            Some(Reader {
-                inner: self.shared.clone(),
-            })
-        } else {
-            None
-        }
-    }
-
-    pub fn swap(&mut self) {
-        if self.op_buffer.is_empty() {
-            return;
-        }
-
-        match self.write_ptr {
-            Ptr::Value1 => self.shared.state.fetch_and(0b011, Ordering::Release),
-            Ptr::Value2 => self.shared.state.fetch_or(0b100, Ordering::Release),
-        };
-
-        self.write_ptr.switch();
-        self.just_swapped = true;
-    }
 }
 
-impl<T: Absorb<O> + Clone, O: Clone> Writer<T, O> {
+impl<T: Clone, O> Writer<T, O> {
     pub fn new(value: T) -> Self {
         // allow value 1 to be read
         let inner = Shared {
@@ -170,8 +165,6 @@ impl<T: Absorb<O> + Clone, O: Clone> Writer<T, O> {
             just_swapped: false,
         }
     }
-
-    
 
     // WAIT FOR ARC::new_uninit to be stabilized. probably on september 5th
 
@@ -201,8 +194,8 @@ impl<T: Absorb<O> + Clone, O: Clone> Writer<T, O> {
     // }
 }
 
-impl<T: Absorb<O> + Default, O: Clone> Writer<T, O> {
-    pub fn new_from_default() -> Self {
+impl<T: Default, O> Default for Writer<T, O> {
+    fn default() -> Self {
         let shared = Shared {
             value_1: UnsafeCell::new(T::default()),
             value_2: UnsafeCell::new(T::default()),
@@ -241,7 +234,7 @@ impl<T: Absorb<O> + Default, O: Clone> Writer<T, O> {
     //     }
 }
 
-impl<T: Absorb<O>, O: Clone> AsRef<T> for Writer<T, O> {
+impl<T, O> AsRef<T> for Writer<T, O> {
     fn as_ref(&self) -> &T {
         // SAFETY: Only the WriteGuard can write to the values / create mut refs to them.
         // The WriteGuard holds a mut ref to the writer so this function can't be called while a writeguard exists

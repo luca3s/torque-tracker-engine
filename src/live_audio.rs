@@ -5,15 +5,17 @@ use std::sync::mpsc::Receiver;
 use crate::audio_processing::sample::Interpolation;
 use crate::audio_processing::Frame;
 use crate::manager::audio_manager::OutputConfig;
+use crate::sample::{GetSampleRef, SampleData};
 use crate::song::note_event::NoteEvent;
-use crate::song::song::InternalSong;
+use crate::song::song::Song;
 use crate::{audio_processing::sample::SamplePlayer, playback::PlaybackState};
+use basedrop::Shared;
 use cpal::{Sample, SampleFormat};
 
 pub(crate) struct LiveAudio {
-    song: simple_left_right::reader::Reader<InternalSong>,
-    playback_state: Option<PlaybackState>,
-    live_note: Option<SamplePlayer>,
+    song: simple_left_right::reader::Reader<Song<Shared<SampleData>>>,
+    playback_state: Option<PlaybackState<Shared<SampleData>>>,
+    live_note: Option<SamplePlayer<Shared<SampleData>>>,
     manager: Receiver<ToWorkerMsg>,
     audio_msg_config: AudioMsgConfig,
     to_app: futures::channel::mpsc::Sender<FromWorkerMsg>,
@@ -25,7 +27,7 @@ impl LiveAudio {
     const INTERPOLATION: u8 = Interpolation::Linear as u8;
 
     pub fn new(
-        song: simple_left_right::reader::Reader<InternalSong>,
+        song: simple_left_right::reader::Reader<Song<Shared<SampleData>>>,
         manager: Receiver<ToWorkerMsg>,
         audio_msg_config: AudioMsgConfig,
         to_app: futures::channel::mpsc::Sender<FromWorkerMsg>,
@@ -76,7 +78,7 @@ impl LiveAudio {
         if let Some(live_note) = &mut self.live_note {
             self.buffer
                 .iter_mut()
-                .zip(live_note.iter::<{ Self::INTERPOLATION }>(1.))
+                .zip(live_note.iter::<{ Self::INTERPOLATION }>())
                 .for_each(|(buf, note)| buf.add_assign(note));
 
             if live_note.check_position().is_break() {
@@ -84,8 +86,11 @@ impl LiveAudio {
             }
         }
 
-        if let Some(_playback) = &mut self.playback_state {
-            todo!()
+        if let Some(playback) = &mut self.playback_state {
+            self.buffer
+                .iter_mut()
+                .zip(playback.iter::<{ Self::INTERPOLATION }, Shared<SampleData>>(&song))
+                .for_each(|(buf, frame)| buf.add_assign(frame));
         }
 
         true

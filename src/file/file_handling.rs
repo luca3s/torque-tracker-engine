@@ -2,7 +2,7 @@ use enumflags2::BitFlags;
 
 use crate::file::impulse_format::{header::ImpulseHeader, pattern::load_pattern};
 use crate::song::pattern::Pattern;
-use crate::song::song::{InternalSong, Song};
+use crate::song::song::Song;
 
 use super::err::{self, LoadDefects};
 
