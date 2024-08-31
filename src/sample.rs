@@ -1,29 +1,192 @@
-use std::ops::Deref;
+use std::{borrow::Borrow, fmt::Debug, mem::ManuallyDrop, ops::Deref};
 
 use basedrop::Shared;
 
 use crate::file::impulse_format::sample::VibratoWave;
 
-/// used to make the playback generic over garbage collected pointers and normal references
-pub trait GetSampleRef<'a>: Send {
-    type SampleRef: Deref<Target = SampleData>;
-
-    fn get_sample_ref(&'a self) -> Self::SampleRef;
+pub union SampleRef<'a, const GC: bool> {
+    gc: ManuallyDrop<Shared<SampleData>>,
+    reference: &'a SampleData,
 }
 
-impl GetSampleRef<'_> for Shared<SampleData> {
-    type SampleRef = Shared<SampleData>;
+impl SampleRef<'static, true> {
+    pub fn new(data: Shared<SampleData>) -> Self {
+        SampleRef {
+            gc: ManuallyDrop::new(data),
+        }
+    }
 
-    fn get_sample_ref(&self) -> Self::SampleRef {
-        self.clone()
+    pub fn get(&self) -> &Shared<SampleData> {
+        unsafe { &self.gc }
     }
 }
 
-impl<'a> GetSampleRef<'a> for SampleData {
-    type SampleRef = &'a SampleData;
+impl<'a> SampleRef<'a, false> {
+    pub fn new(data: &'a SampleData) -> Self {
+        SampleRef { reference: data }
+    }
 
-    fn get_sample_ref(&'a self) -> Self::SampleRef {
-        self
+    pub fn get(&self) -> &'a SampleData {
+        unsafe { self.reference }
+    }
+}
+
+impl<const GC: bool> Debug for SampleRef<'_, GC> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match GC {
+            true => write!(f, "GC Sample Ref"),
+            false => write!(f, "Non GC Sample Ref"),
+        }
+    }
+}
+
+impl<const GC: bool> Deref for SampleRef<'_, GC> {
+    type Target = SampleData;
+
+    fn deref(&self) -> &Self::Target {
+        match GC {
+            true => unsafe { self.gc.deref() },
+            false => unsafe { self.reference },
+        }
+    }
+}
+
+impl<const GC: bool> Drop for SampleRef<'_, GC> {
+    fn drop(&mut self) {
+        match GC {
+            true => unsafe { ManuallyDrop::drop(&mut self.gc) },
+            false => (),
+        }
+    }
+}
+
+impl<const GC: bool> Clone for SampleRef<'_, GC> {
+    fn clone(&self) -> Self {
+        match GC {
+            true => {
+                let data = unsafe { self.gc.deref().clone() };
+                SampleRef {
+                    gc: ManuallyDrop::new(data),
+                }
+            }
+            false => {
+                let data = unsafe { self.reference };
+                SampleRef { reference: data }
+            }
+        }
+    }
+}
+
+pub union Sample<const GC: bool> {
+    gc: ManuallyDrop<Shared<SampleData>>,
+    owned: ManuallyDrop<SampleData>,
+}
+
+impl Sample<true> {
+    pub fn new(data: Shared<SampleData>) -> Self {
+        Self {
+            gc: ManuallyDrop::new(data),
+        }
+    }
+
+    pub fn get_ref(&self) -> SampleRef<'static, true> {
+        let data = unsafe { self.gc.deref().clone() };
+        SampleRef::<'static, true>::new(data)
+    }
+
+    pub fn get(&self) -> &Shared<SampleData> {
+        unsafe { &self.gc }
+    }
+
+    pub fn take(mut self) -> Shared<SampleData> {
+        let out = unsafe { ManuallyDrop::take(&mut self.gc) };
+        std::mem::forget(self);
+        out
+    }
+
+    pub fn to_owned(&self) -> Sample<false> {
+        let shared = unsafe { self.gc.deref() }.deref();
+        Sample {
+            owned: ManuallyDrop::new(shared.clone()),
+        }
+    }
+}
+
+impl Sample<false> {
+    pub fn new(data: SampleData) -> Self {
+        Self {
+            owned: ManuallyDrop::new(data),
+        }
+    }
+
+    pub fn get(&self) -> &SampleData {
+        unsafe { &self.owned }
+    }
+
+    pub fn get_ref<'a>(&'a self) -> SampleRef<'a, false> {
+        SampleRef::<'a, false>::new(unsafe { &self.owned })
+    }
+
+    pub fn take(mut self) -> SampleData {
+        let out = unsafe { ManuallyDrop::take(&mut self.owned) };
+        std::mem::forget(self);
+        out
+    }
+
+    pub fn to_gc(self, handle: &basedrop::Handle) -> Sample<true> {
+        let data = self.take();
+        let shared = basedrop::Shared::new(handle, data);
+        Sample {
+            gc: ManuallyDrop::new(shared),
+        }
+    }
+}
+
+impl<const GC: bool> Debug for Sample<GC> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match GC {
+            true => write!(f, "GC Sample. len: {}", self.borrow().len_with_pad()),
+            false => write!(f, "Owned Sample. len: {}", self.borrow().len_with_pad()),
+        }
+    }
+}
+
+impl<const GC: bool> Deref for Sample<GC> {
+    type Target = SampleData;
+
+    fn deref(&self) -> &Self::Target {
+        match GC {
+            true => unsafe { self.gc.deref() },
+            false => unsafe { self.owned.deref() },
+        }
+    }
+}
+
+impl<const GC: bool> Clone for Sample<GC> {
+    fn clone(&self) -> Self {
+        match GC {
+            true => {
+                let data = unsafe { self.gc.deref().clone() };
+                Sample {
+                    gc: ManuallyDrop::new(data),
+                }
+            }
+            false => {
+                let data = unsafe { self.owned.deref().clone() };
+                Sample {
+                    owned: ManuallyDrop::new(data),
+                }
+            }
+        }
+    }
+}
+
+impl<const GC: bool> Drop for Sample<GC> {
+    fn drop(&mut self) {
+        match GC {
+            true => unsafe { ManuallyDrop::drop(&mut self.gc) },
+            false => unsafe { ManuallyDrop::drop(&mut self.owned) },
+        }
     }
 }
 

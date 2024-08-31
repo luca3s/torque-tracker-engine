@@ -1,5 +1,5 @@
-use crate::file::err;
 use crate::file::err::LoadDefects;
+use crate::file::{err, FileReader};
 use crate::song::event_command::NoteCommand;
 use crate::song::note_event::{NoteEvent, VolumeEffect};
 use crate::song::pattern::{InPatternPosition, Pattern};
@@ -138,9 +138,33 @@ pub fn load_pattern(buf: &[u8]) -> Result<(Pattern, BitFlags<LoadDefects>), err:
         );
     }
 
-    if pattern.get_row_count() == row_num {
+    if pattern.row_count() == row_num {
         Ok((pattern, defects))
     } else {
         Err(err::LoadErr::BufferTooShort)
     }
 }
+
+// pub fn load_pattern_new(buf: &[u8]) -> Result<(Pattern, BitFlags<LoadDefects>), err::LoadErr> {
+//     const PATTERN_HEADER_SIZE: usize = 8;
+
+//     if buf.len() >= 64_000 {
+//         return Err(err::LoadErr::Invalid);
+//     }
+
+//     let mut reader = FileReader::new(buf);
+//     reader.require_remaining(PATTERN_HEADER_SIZE)?;
+
+//     let lenght = usize::from(reader.get_u16()?) + PATTERN_HEADER_SIZE;
+//     reader.require_overall(lenght)?;
+
+//     let num_rows_header = reader.get_u16()?;
+//     if !(32..=200).contains(&num_rows_header) {
+//         return Err(err::LoadErr::Invalid);
+//     }
+
+//     let mut pattern = Pattern::new(num_rows_header);
+
+//     let mut row_num = 0;
+//     todo!()
+// }

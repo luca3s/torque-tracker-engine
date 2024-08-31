@@ -4,12 +4,13 @@ use std::num::NonZeroUsize;
 use crate::channel::Pan;
 use enumflags2::{BitFlag, BitFlags};
 
-#[derive(Debug, Default, Clone, Copy)]
+/// maybe completely wrong
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum PatternOrder {
     Number(u8),
     #[default]
     EndOfSong,
-    NextOrder,
+    SkipOrder,
 }
 
 impl TryFrom<u8> for PatternOrder {
@@ -18,7 +19,7 @@ impl TryFrom<u8> for PatternOrder {
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
             255 => Ok(Self::EndOfSong),
-            254 => Ok(Self::NextOrder),
+            254 => Ok(Self::SkipOrder),
             0..=199 => Ok(Self::Number(value)),
             _ => Err(value),
         }
@@ -76,7 +77,7 @@ impl ImpulseHeader {
         let mut defects = LoadDefects::empty();
 
         let song_name = {
-            let str = buf[0x14..=0x2D].split(|b| *b == 0).next().unwrap().to_vec();
+            let str = buf[0x4..=0x1D].split(|b| *b == 0).next().unwrap().to_vec();
             let str = String::from_utf8(str);
             if str.is_err() {
                 defects.insert(LoadDefects::InvalidText);
@@ -157,7 +158,7 @@ impl ImpulseHeader {
                 Ok(pat_order) => pat_order,
                 Err(_) => {
                     defects.insert(LoadDefects::OutOfBoundsValue);
-                    PatternOrder::NextOrder
+                    PatternOrder::SkipOrder
                 }
             })
             .collect();
@@ -194,6 +195,37 @@ impl ImpulseHeader {
             defects,
         ))
     }
+
+    // pub fn load_new(buf: &[u8]) -> Result<(Self, BitFlags<LoadDefects>), LoadErr> {
+    //     let mut reader = FileReader::new(buf);
+
+    //     reader.require_remaining(Self::BASE_SIZE)?;
+
+    //     if !reader.assert_eq(&[b'I', b'M', b'P', b'M'])? {
+    //         return Err(LoadErr::Invalid)
+    //     }
+
+    //     let mut defects = LoadDefects::empty();
+
+    //     let name = match reader.get_c_str(26)? {
+    //         Some(str) => str,
+    //         None => {
+    //             defects.insert(LoadDefects::InvalidText);
+    //             String::new()
+    //         },
+    //     };
+
+    //     let philight = reader.get_u16()?;
+    //     let ord_num = reader.get_u16()?;
+    //     let ins_num = reader.get_u16()?;
+    //     let sample_num = reader.get_u16()?;
+    //     let pattern_num = reader.get_u16()?;
+    //     let created_with = reader.get_u16()?;
+    //     let compatible_with = reader.get_u16()?;
+    //     let flags = reader.get_u16()?;
+    //     let special = reader.get_u16()?;
+
+    // }
 }
 
 // used to load Pointers to different pieces of the project from the header.

@@ -5,20 +5,25 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 use crate::{
     channel::Pan,
-    live_audio::{AudioMsgConfig, FromWorkerMsg, LiveAudio, ToWorkerMsg},
+    file::impulse_format::header::PatternOrder,
+    live_audio::{AudioMsgConfig, FromWorkerMsg, LiveAudio, PlaybackSettings, ToWorkerMsg},
     sample::{SampleData, SampleMetaData},
-    song::song::{Song, SongOperation},
+    song::{
+        note_event::NoteEvent,
+        pattern::InPatternPosition,
+        song::{Song, SongOperation},
+    },
 };
 
 pub struct AudioManager {
-    song: simple_left_right::writer::Writer<Song<Shared<SampleData>>, SongOperation>,
+    song: simple_left_right::writer::Writer<Song<true>, SongOperation>,
     gc: Collector,
     gc_handle: Handle,
     stream: Option<(cpal::Stream, std::sync::mpsc::Sender<ToWorkerMsg>)>,
 }
 
 impl AudioManager {
-    pub fn new(song: Song<SampleData>) -> Self {
+    pub fn new(song: Song<false>) -> Self {
         let gc = basedrop::Collector::new();
         let gc_handle = gc.handle();
         let left_right = simple_left_right::writer::Writer::new(song.to_gc(&gc_handle));
@@ -45,6 +50,10 @@ impl AudioManager {
             song: std::mem::ManuallyDrop::new(self.song.lock()),
             gc_handle: &self.gc_handle,
         }
+    }
+
+    pub fn get_song(&self) -> &Song<true> {
+        &self.song
     }
 
     pub fn collect_garbage(&mut self) {
@@ -91,6 +100,12 @@ impl AudioManager {
             channel.send(ToWorkerMsg::PlayEvent(note_event)).unwrap();
         }
     }
+
+    pub fn play_song(&self, settings: PlaybackSettings) {
+        if let Some((_, channel)) = &self.stream {
+            channel.send(ToWorkerMsg::Playback(settings)).unwrap();
+        }
+    }
 }
 
 /// the changes made to the song will be made available to the playing live audio as soon as
@@ -101,28 +116,62 @@ impl AudioManager {
 // need manuallyDrop because i need consume on drop behaviour
 pub struct SongEdit<'a> {
     song: std::mem::ManuallyDrop<
-        simple_left_right::writer::WriteGuard<'a, Song<Shared<SampleData>>, SongOperation>,
+        simple_left_right::writer::WriteGuard<'a, Song<true>, SongOperation>,
     >,
     gc_handle: &'a Handle,
 }
 
 impl SongEdit<'_> {
     pub fn set_sample(&mut self, num: usize, meta: SampleMetaData, data: SampleData) {
-        assert!(num < Song::<SampleData>::MAX_SAMPLES);
+        assert!(num < Song::<false>::MAX_SAMPLES);
         let op = SongOperation::SetSample(num, meta, Shared::new(self.gc_handle, data));
         self.song.apply_op(op);
     }
 
     pub fn set_volume(&mut self, channel: usize, volume: u8) {
-        assert!(channel < Song::<SampleData>::MAX_CHANNELS);
+        assert!(channel < Song::<false>::MAX_CHANNELS);
         let op = SongOperation::SetVolume(channel, volume);
         self.song.apply_op(op);
     }
 
     pub fn set_pan(&mut self, channel: usize, pan: Pan) {
-        assert!(channel < Song::<SampleData>::MAX_CHANNELS);
+        assert!(channel < Song::<false>::MAX_CHANNELS);
         let op = SongOperation::SetPan(channel, pan);
         self.song.apply_op(op);
+    }
+
+    pub fn set_note_event(
+        &mut self,
+        pattern: usize,
+        position: InPatternPosition,
+        event: NoteEvent,
+    ) {
+        assert!(pattern < Song::<false>::MAX_PATTERNS);
+        assert!(position.row < self.song.patterns[pattern].row_count());
+        let op = SongOperation::SetNoteEvent(pattern, position, event);
+        self.song.apply_op(op);
+    }
+
+    pub fn remove_note_event(&mut self, pattern: usize, position: InPatternPosition) {
+        assert!(pattern < Song::<false>::MAX_PATTERNS);
+        assert!(position.row < self.song.patterns[pattern].row_count());
+        let op = SongOperation::DeleteNoteEvent(pattern, position);
+        self.song.apply_op(op);
+    }
+
+    pub fn set_order(&mut self, idx: usize, order: PatternOrder) {
+        assert!(idx < Song::<false>::MAX_ORDERS);
+        let op = SongOperation::SetOrder(idx, order);
+        self.song.apply_op(op);
+    }
+
+    pub fn song(&self) -> &Song<true> {
+        &self.song
+    }
+
+    /// Finish the changes and publish them to the live playing song
+    pub fn finish(self) {
+        drop(self)
     }
 }
 

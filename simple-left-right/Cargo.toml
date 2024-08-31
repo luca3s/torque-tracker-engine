@@ -6,8 +6,8 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-# only for backoff spinlocks
-crossbeam = { version="0.8.4", default-features=false }
+# only for backoff spinlocks. std feature active so it can use thread::yield
+crossbeam-utils = "0.8.20"
 
 [target.'cfg(loom)'.dependencies]
 loom = "0.7"

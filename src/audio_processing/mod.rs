@@ -8,7 +8,7 @@ pub mod sample;
 
 #[repr(transparent)]
 #[derive(Clone, Copy, Default, Debug, PartialEq)]
-pub(crate) struct Frame([f32; 2]);
+pub struct Frame([f32; 2]);
 
 impl std::ops::AddAssign for Frame {
     fn add_assign(&mut self, rhs: Self) {

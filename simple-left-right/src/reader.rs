@@ -1,8 +1,8 @@
-use std::cell::UnsafeCell;
-use std::ops::Deref;
-use std::sync::atomic::Ordering;
+use core::cell::UnsafeCell;
+use core::ops::Deref;
+use core::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::{marker::PhantomData, sync::atomic::AtomicU8};
+use core::{marker::PhantomData, sync::atomic::AtomicU8};
 
 use crate::{Ptr, Shared};
 
@@ -16,24 +16,21 @@ pub struct ReadGuard<'a, T> {
     reader: PhantomData<&'a mut Reader<T>>,
 }
 
-// a outlives b
-impl<'a: 'b, 'b, T> ReadGuard<'a, T> {
-    fn get_ref(&'b self) -> &'b T {
-        unsafe { self.data.get().as_ref().unwrap() }
-    }
-}
-
 impl<'a, T> Deref for ReadGuard<'a, T> {
     type Target = T;
 
-    fn deref<'b>(&'b self) -> &'b Self::Target {
-        self.get_ref()
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*self.data.get() }
     }
 }
 
-impl<T> AsRef<T> for ReadGuard<'_, T> {
-    fn as_ref(&self) -> &T {
-        self.get_ref()
+impl<T, E> AsRef<E> for ReadGuard<'_, T>
+where
+    E: ?Sized,
+    <Self as Deref>::Target: AsRef<E>,
+{
+    fn as_ref(&self) -> &E {
+        self.deref().as_ref()
     }
 }
 
@@ -55,7 +52,7 @@ pub struct Reader<T> {
 
 impl<T> Reader<T> {
     /// this function never blocks
-    pub fn lock<'a>(&'a mut self) -> ReadGuard<'a, T> {
+    pub fn lock(&mut self) -> ReadGuard<'_, T> {
         // sets the corresponding read bit to the write ptr bit
         // happens as a single atomic operation so the 'double read' state isn't needed
         // ptr bit doesnt get changed

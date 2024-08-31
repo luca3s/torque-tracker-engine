@@ -1,12 +1,9 @@
 use crate::{reader::Reader, Ptr, ReadState, Shared};
-use std::{
+use core::{
     cell::UnsafeCell,
-    collections::VecDeque,
-    sync::{
-        atomic::{AtomicU8, Ordering},
-        Arc,
-    },
+    sync::atomic::{AtomicU8, Ordering, fence},
 };
+use std::{borrow::Borrow, collections::VecDeque, ops::Deref, sync::Arc};
 
 pub struct WriteGuard<'a, T, O> {
     writer: &'a mut Writer<T, O>,
@@ -14,9 +11,9 @@ pub struct WriteGuard<'a, T, O> {
 
 impl<T, O> WriteGuard<'_, T, O> {
     /// see swap on Writer.
-    /// drops WriteGuard, because the creation of a new WriteGuard has to wait for the Reader to drop his ReadGuard.
+    /// drops `WriteGuard`, because the creation of a new `WriteGuard` has to wait for the Reader to drop his `ReadGuard`.
     pub fn swap(self) {
-        self.writer.swap()
+        self.writer.swap();
     }
 
     fn get_data_mut(&mut self) -> &mut T {
@@ -49,22 +46,37 @@ impl<T: Absorb<O>, O: Clone> WriteGuard<'_, T, O> {
     /// applies operation to the current write Value and stores it to apply to the other later.
     /// If there is no reader the operation is applied to both values immediately and not stored
     pub fn apply_op(&mut self, operation: O) {
-        match Arc::get_mut(&mut self.writer.shared) {
-            Some(inner) => {
-                inner.value_1.get_mut().absorb(operation.clone());
-                inner.value_2.get_mut().absorb(operation);
-            }
-            None => {
-                self.get_data_mut().absorb(operation.clone());
-                self.writer.op_buffer.push_back(operation);
-            }
+        if let Some(inner) = Arc::get_mut(&mut self.writer.shared) {
+            inner.value_1.get_mut().absorb(operation.clone());
+            inner.value_2.get_mut().absorb(operation);
+        } else {
+            self.get_data_mut().absorb(operation.clone());
+            self.writer.op_buffer.push_back(operation);
         }
     }
 }
 
-impl<T, O> AsRef<T> for WriteGuard<'_, T, O> {
-    fn as_ref(&self) -> &T {
-        self.writer.as_ref()
+impl<T, O> Borrow<T> for WriteGuard<'_, T, O> {
+    fn borrow(&self) -> &T {
+        self
+    }
+}
+
+impl<T, O, E> AsRef<E> for WriteGuard<'_, T, O>
+where
+    E: ?Sized,
+    <Self as Deref>::Target: AsRef<E>,
+{
+    fn as_ref(&self) -> &E {
+        self.deref().as_ref()
+    }
+}
+
+impl<T, O> Deref for WriteGuard<'_, T, O> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &*self.writer
     }
 }
 
@@ -80,7 +92,7 @@ pub struct Writer<T, O> {
 
 impl<T, O> Writer<T, O> {
     /// swaps the read and write values. If no changes were made since the last swap nothing happens. Never blocks
-    /// see also WriteGuard::swap, which is maybe a bit more ergonimic
+    /// see also `WriteGuard::swap`, which is maybe a bit more ergonimic
     pub fn swap(&mut self) {
         if self.op_buffer.is_empty() {
             return;
@@ -108,9 +120,9 @@ impl<T, O> Writer<T, O> {
 }
 
 impl<'a, T: Absorb<O>, O: Clone> Writer<T, O> {
-    /// blocks if the Reader has a ReadGuard pointing to the old value
+    /// blocks if the Reader has a `ReadGuard` pointing to the old value
     pub fn lock(&'a mut self) -> WriteGuard<'a, T, O> {
-        let backoff = crossbeam::utils::Backoff::new();
+        let backoff = crossbeam_utils::Backoff::new();
 
         loop {
             // operation has to be aquire, but only the time it breaks the loop
@@ -119,7 +131,7 @@ impl<'a, T: Absorb<O>, O: Clone> Writer<T, O> {
             if ReadState::from(state).can_write(self.write_ptr) {
                 // make the load operation aquire only when it actually breaks the loop
                 // the important (last) load is aquire, while all loads before are relaxed
-                std::sync::atomic::fence(Ordering::Acquire);
+                fence(Ordering::Acquire);
                 break;
             }
 
@@ -133,7 +145,7 @@ impl<'a, T: Absorb<O>, O: Clone> Writer<T, O> {
         }
     }
 
-    /// doesn't block. Returns None if the Reader has a ReadGuard pointing to the old value
+    /// doesn't block. Returns None if the Reader has a `ReadGuard` pointing to the old value
     pub fn try_lock(&'a mut self) -> Option<WriteGuard<'a, T, O>> {
         let state = self.shared.state.load(Ordering::Acquire);
 
@@ -234,8 +246,26 @@ impl<T: Default, O> Default for Writer<T, O> {
     //     }
 }
 
-impl<T, O> AsRef<T> for Writer<T, O> {
-    fn as_ref(&self) -> &T {
+impl<T, O> Borrow<T> for Writer<T, O> {
+    fn borrow(&self) -> &T {
+        self
+    }
+}
+
+impl<T, O, E> AsRef<E> for Writer<T, O>
+where
+    E: ?Sized,
+    <Self as Deref>::Target: AsRef<E>,
+{
+    fn as_ref(&self) -> &E {
+        self.deref().as_ref()
+    }
+}
+
+impl<T, O> Deref for Writer<T, O> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
         // SAFETY: Only the WriteGuard can write to the values / create mut refs to them.
         // The WriteGuard holds a mut ref to the writer so this function can't be called while a writeguard exists
         // This means that reading them / creating refs is safe to do

@@ -1,21 +1,22 @@
 use std::fmt::Debug;
-use std::ops::{AddAssign, IndexMut};
+use std::ops::{AddAssign, Deref, IndexMut};
 use std::sync::mpsc::Receiver;
 
 use crate::audio_processing::sample::Interpolation;
 use crate::audio_processing::Frame;
 use crate::manager::audio_manager::OutputConfig;
-use crate::sample::{GetSampleRef, SampleData};
+use crate::playback::PlaybackPosition;
 use crate::song::note_event::NoteEvent;
+use crate::song::pattern::InPatternPosition;
 use crate::song::song::Song;
 use crate::{audio_processing::sample::SamplePlayer, playback::PlaybackState};
-use basedrop::Shared;
 use cpal::{Sample, SampleFormat};
+use futures::SinkExt;
 
 pub(crate) struct LiveAudio {
-    song: simple_left_right::reader::Reader<Song<Shared<SampleData>>>,
-    playback_state: Option<PlaybackState<Shared<SampleData>>>,
-    live_note: Option<SamplePlayer<Shared<SampleData>>>,
+    song: simple_left_right::reader::Reader<Song<true>>,
+    playback_state: Option<PlaybackState<'static, true>>,
+    live_note: Option<SamplePlayer<'static, true>>,
     manager: Receiver<ToWorkerMsg>,
     audio_msg_config: AudioMsgConfig,
     to_app: futures::channel::mpsc::Sender<FromWorkerMsg>,
@@ -27,7 +28,7 @@ impl LiveAudio {
     const INTERPOLATION: u8 = Interpolation::Linear as u8;
 
     pub fn new(
-        song: simple_left_right::reader::Reader<Song<Shared<SampleData>>>,
+        song: simple_left_right::reader::Reader<Song<true>>,
         manager: Receiver<ToWorkerMsg>,
         audio_msg_config: AudioMsgConfig,
         to_app: futures::channel::mpsc::Sender<FromWorkerMsg>,
@@ -52,12 +53,16 @@ impl LiveAudio {
 
         for event in self.manager.try_iter() {
             match event {
-                ToWorkerMsg::StopPlayback => (),
-                ToWorkerMsg::PlaybackFrom => (),
+                ToWorkerMsg::StopPlayback => self.playback_state = None,
+                ToWorkerMsg::Playback(_) => {
+                    self.playback_state = PlaybackState::<true>::new(&song, self.config.sample_rate);
+                    dbg!(song.deref());
+                    println!("playback started");
+                }
                 ToWorkerMsg::PlayEvent(note) => {
-                    if let Some(sample) = &song.as_ref().samples[usize::from(note.sample_instr)] {
+                    if let Some(sample) = &song.samples[usize::from(note.sample_instr)] {
                         let sample_player = SamplePlayer::new(
-                            sample.clone(),
+                            (sample.0, sample.1.get_ref()),
                             self.config.sample_rate / 2,
                             sample.0.sample_rate,
                         );
@@ -76,9 +81,10 @@ impl LiveAudio {
         self.buffer.fill(Frame::default());
 
         if let Some(live_note) = &mut self.live_note {
+            let note_iter = live_note.iter::<{ Self::INTERPOLATION }>();
             self.buffer
                 .iter_mut()
-                .zip(live_note.iter::<{ Self::INTERPOLATION }>())
+                .zip(note_iter)
                 .for_each(|(buf, note)| buf.add_assign(note));
 
             if live_note.check_position().is_break() {
@@ -87,10 +93,16 @@ impl LiveAudio {
         }
 
         if let Some(playback) = &mut self.playback_state {
+            let position = playback.get_position();
+            let playback_iter = playback.iter::<{ Self::INTERPOLATION }>(&song);
             self.buffer
                 .iter_mut()
-                .zip(playback.iter::<{ Self::INTERPOLATION }, Shared<SampleData>>(&song))
+                .zip(playback_iter)
                 .for_each(|(buf, frame)| buf.add_assign(frame));
+
+            if self.audio_msg_config.playback_position && position != playback.get_position() {
+                let _ = self.to_app.try_send(FromWorkerMsg::CurrentPlaybackPosition(playback.get_position()));
+            }
         }
 
         true
@@ -99,7 +111,7 @@ impl LiveAudio {
     /// converts the internal buffer to any possible output format and channel count
     /// sums stereo to mono and fills channels 3 and up with silence
     #[inline]
-    fn fill_from_internal<S: cpal::Sample + cpal::SizedSample + cpal::FromSample<f32> + Debug>(
+    fn fill_from_internal<S: cpal::Sample + cpal::SizedSample + cpal::FromSample<f32>>(
         &mut self,
         data: &mut [S],
     ) {
@@ -172,7 +184,7 @@ impl LiveAudio {
         }
     }
 
-    pub fn get_typed_callback<S: cpal::SizedSample + cpal::FromSample<f32> + Debug>(
+    pub fn get_typed_callback<S: cpal::SizedSample + cpal::FromSample<f32>>(
         mut self,
     ) -> impl FnMut(&mut [S], &cpal::OutputCallbackInfo) {
         move |data, info| {
@@ -202,18 +214,21 @@ fn sine(output: &mut [[f32; 2]], sample_rate: f32) {
 #[derive(Default)]
 pub struct AudioMsgConfig {
     pub buffer_finished: bool,
-    pub playback: bool,
+    pub playback_position: bool,
 }
 
 pub(crate) enum ToWorkerMsg {
     StopPlayback,
     // need some way to encode information about pattern / position
-    PlaybackFrom,
+    Playback(PlaybackSettings),
     PlayEvent(NoteEvent),
 }
+
+pub struct PlaybackSettings {}
 
 #[derive(Debug)]
 pub enum FromWorkerMsg {
     BufferFinished(cpal::OutputStreamTimestamp),
+    CurrentPlaybackPosition(PlaybackPosition),
     PlaybackStopped,
 }

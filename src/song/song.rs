@@ -16,13 +16,16 @@ use std::array;
 
 use crate::channel::Pan;
 use crate::file::impulse_format::header::PatternOrder;
-use crate::sample::{GetSampleRef, SampleData, SampleMetaData};
+use crate::sample::{Sample, SampleData, SampleMetaData};
 use crate::song::pattern::Pattern;
 use basedrop::Shared;
 
+use super::note_event::NoteEvent;
+use super::pattern::InPatternPosition;
+
 #[derive(Clone)]
-pub struct Project<GS: for<'a> GetSampleRef<'a>> {
-    pub song: Song<GS>,
+pub struct Project<const GC: bool> {
+    pub song: Song<GC>,
     pub name: String,
     pub description: String,
 }
@@ -30,8 +33,8 @@ pub struct Project<GS: for<'a> GetSampleRef<'a>> {
 /// Playback Speed in Schism is determined by two values: Tempo and Speed.
 /// Speed specifies how many ticks are in one row. This reduces tempo, but increases resolution of some effects.
 /// Tempo determines how many ticks are in one second with the following formula: tempo/10 = ticks per second.
-#[derive(Clone)]
-pub struct Song<GS: for<'a> GetSampleRef<'a>> {
+#[derive(Clone, Debug)]
+pub struct Song<const GC: bool> {
     pub global_volume: u8,
     pub mix_volume: u8,
     pub initial_speed: u8,
@@ -39,23 +42,47 @@ pub struct Song<GS: for<'a> GetSampleRef<'a>> {
     pub pan_separation: u8,
     pub pitch_wheel_depth: u8,
 
-    pub patterns: [Pattern; Song::<SampleData>::MAX_PATTERNS],
-    pub pattern_order: [PatternOrder; Song::<SampleData>::MAX_ORDERS],
-    pub volume: [u8; Song::<SampleData>::MAX_CHANNELS],
-    pub pan: [Pan; Song::<SampleData>::MAX_CHANNELS],
-    pub samples: [Option<(SampleMetaData, GS)>; Song::<SampleData>::MAX_SAMPLES],
+    pub patterns: [Pattern; Song::<true>::MAX_PATTERNS],
+    pub pattern_order: [PatternOrder; Song::<true>::MAX_ORDERS],
+    pub volume: [u8; Song::<true>::MAX_CHANNELS],
+    pub pan: [Pan; Song::<true>::MAX_CHANNELS],
+    pub samples: [Option<(SampleMetaData, Sample<GC>)>; Song::<true>::MAX_SAMPLES],
 }
 
-impl<GS: for<'a> GetSampleRef<'a>> Song<GS> {
+impl<const GC: bool> Song<GC> {
     pub const MAX_ORDERS: usize = 256;
     pub const MAX_PATTERNS: usize = 240;
     pub const MAX_SAMPLES: usize = 236;
     pub const MAX_INSTR: usize = Self::MAX_SAMPLES;
     pub const MAX_CHANNELS: usize = 64;
+
+    /// order value shouldn't be modified outside of this function.
+    /// This moves it forward correctly and returns the pattern to be played
+    pub fn next_pattern(&self, order: &mut usize) -> Option<u8> {
+        loop {
+            match self.get_order(*order) {
+                PatternOrder::Number(pattern) => break Some(pattern),
+                PatternOrder::EndOfSong => break None,
+                PatternOrder::SkipOrder => (),
+            }
+            *order += 1;
+        }
+    }
+
+    /// out of bounds is EndOfSong
+    pub(crate) fn get_order(&self, order: usize) -> PatternOrder {
+        self.pattern_order.get(order).copied().unwrap_or_default()
+    }
 }
 
-impl Song<SampleData> {
-    pub(crate) fn to_gc(self, handle: &basedrop::Handle) -> Song<Shared<SampleData>> {
+impl From<Song<true>> for Song<false> {
+    fn from(value: Song<true>) -> Self {
+        value.to_owned()
+    }
+}
+
+impl Song<false> {
+    pub(crate) fn to_gc(self, handle: &basedrop::Handle) -> Song<true> {
         Song {
             global_volume: self.global_volume,
             mix_volume: self.mix_volume,
@@ -69,13 +96,13 @@ impl Song<SampleData> {
             pan: self.pan,
             samples: self
                 .samples
-                .map(|s| s.map(|(meta, data)| (meta, basedrop::Shared::new(handle, data)))),
+                .map(|s| s.map(|(meta, data)| (meta, data.to_gc(handle)))),
         }
     }
 }
 
-impl Song<Shared<SampleData>> {
-    pub fn to_owned(self) -> Song<SampleData> {
+impl Song<true> {
+    pub fn to_owned(self) -> Song<false> {
         Song {
             global_volume: self.global_volume,
             mix_volume: self.mix_volume,
@@ -89,15 +116,12 @@ impl Song<Shared<SampleData>> {
             pan: self.pan,
             samples: self
                 .samples
-                .map(|option| option.map(|(meta, data)| (meta, (*data).clone()))),
+                .map(|option| option.map(|(meta, data)| (meta, data.to_owned()))),
         }
     }
 }
 
-impl<GS> Default for Song<GS>
-where
-    GS: for<'a> GetSampleRef<'a>,
-{
+impl<const GC: bool> Default for Song<GC> {
     fn default() -> Self {
         Self {
             global_volume: 128,
@@ -123,16 +147,26 @@ pub(crate) enum SongOperation {
     SetVolume(usize, u8),
     SetPan(usize, Pan),
     SetSample(usize, SampleMetaData, Shared<SampleData>),
+    SetNoteEvent(usize, InPatternPosition, NoteEvent),
+    DeleteNoteEvent(usize, InPatternPosition),
+    SetOrder(usize, PatternOrder),
 }
 
-impl simple_left_right::writer::Absorb<SongOperation> for Song<Shared<SampleData>> {
+impl simple_left_right::writer::Absorb<SongOperation> for Song<true> {
     fn absorb(&mut self, operation: SongOperation) {
         match operation {
             SongOperation::SetVolume(chan, val) => self.volume[chan] = val,
             SongOperation::SetPan(chan, val) => self.pan[chan] = val,
             SongOperation::SetSample(sample, meta, data) => {
-                self.samples[sample] = Some((meta, data))
+                self.samples[sample] = Some((meta, Sample::<true>::new(data)))
             }
+            SongOperation::SetNoteEvent(pattern, position, event) => {
+                self.patterns[pattern].set_event(position, event)
+            }
+            SongOperation::DeleteNoteEvent(pattern, position) => {
+                self.patterns[pattern].remove_event(position)
+            }
+            SongOperation::SetOrder(idx, order) => self.pattern_order[idx] = order,
         }
     }
 }

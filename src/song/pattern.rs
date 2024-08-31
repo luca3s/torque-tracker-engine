@@ -1,7 +1,8 @@
+use std::ops::{Index, IndexMut};
+
 use crate::song::note_event::NoteEvent;
 use crate::song::song::Song;
 
-/// Eq and ord impls only compare the row and channel
 /// both row and channel are zero based. If this ever changes a lot of the implementations of
 /// Pattern need to be changed, because the searching starts working differently
 // don't change the Order of fields, as PartialOrd derive depends on it
@@ -30,7 +31,7 @@ mod test {
 #[derive(Clone, Debug)]
 pub struct Pattern {
     rows: u16,
-    pub data: Vec<(InPatternPosition, NoteEvent)>,
+    data: Vec<(InPatternPosition, NoteEvent)>,
 }
 
 impl Default for Pattern {
@@ -40,14 +41,13 @@ impl Default for Pattern {
 }
 
 impl Pattern {
-    const MAX_LEN: u16 = 200;
+    pub const MAX_ROWS: u16 = 200;
 
-    const DEFAULT_ROWS: u16 = 64;
+    pub const DEFAULT_ROWS: u16 = 64;
 
-    pub fn new(mut len: u16) -> Self {
-        if len > Self::MAX_LEN {
-            len = Self::MAX_LEN;
-        }
+    /// panics if len larger than 'Self::MAX_LEN'
+    pub fn new(len: u16) -> Self {
+        assert!(len <= Self::MAX_ROWS);
         Self {
             rows: len,
             data: Vec::new(),
@@ -57,28 +57,46 @@ impl Pattern {
     /// panics it the new len is larger than 'Self::MAX_LEN'
     /// deletes the data on higher rows
     pub fn set_length(&mut self, new_len: u16) {
-        assert!(new_len <= Self::MAX_LEN);
+        assert!(new_len <= Self::MAX_ROWS);
         // gets the index of the first element of the first row to be removed
-        let idx = self
-            .data
-            .binary_search_by_key(
-                &InPatternPosition {
-                    row: new_len,
-                    channel: 0,
-                },
-                |(pos, _)| *pos,
-            )
-            .unwrap_or_else(|i| i);
-        self.data.truncate(idx);
+        if new_len < self.rows {
+            let idx = self
+                .data
+                .binary_search_by_key(
+                    &InPatternPosition {
+                        row: new_len,
+                        channel: 0,
+                    },
+                    |(pos, _)| *pos,
+                )
+                .unwrap_or_else(|i| i);
+            self.data.truncate(idx);
+        }
         self.rows = new_len;
     }
 
     /// overwrites the event if the row already has an event for that channel
+    /// panics if the row position is larger than current amount of rows
     pub fn set_event(&mut self, position: InPatternPosition, event: NoteEvent) {
+        assert!(self.rows > position.row);
         match self.data.binary_search_by_key(&position, key) {
             Ok(idx) => self.data[idx].1 = event,
             Err(idx) => self.data.insert(idx, (position, event)),
         }
+    }
+
+    pub fn get_event(&self, index: InPatternPosition) -> Option<&NoteEvent> {
+        self.data
+            .binary_search_by_key(&index, key)
+            .ok()
+            .map(|idx| &self.data[idx].1)
+    }
+
+    pub fn get_event_mut(&mut self, index: InPatternPosition) -> Option<&mut NoteEvent> {
+        self.data
+            .binary_search_by_key(&index, key)
+            .ok()
+            .map(|idx| &mut self.data[idx].1)
     }
 
     /// if there is no event, does nothing
@@ -88,24 +106,50 @@ impl Pattern {
         }
     }
 
-    pub fn get_row_count(&self) -> u16 {
+    pub fn row_count(&self) -> u16 {
         self.rows
     }
+}
 
-    // fn sort(&mut self) {
-    //     self.data.sort_unstable_by_key(|(pos, _)| *pos);
-    // }
+impl Index<u16> for Pattern {
+    type Output = [(InPatternPosition, NoteEvent)];
 
-    // pub fn get_row(&self, row: u16) -> &[(InPatternPosition, NoteEvent)] {
-    //     let start_position = InPatternPosition { row, channel: 0};
-    //     let end_position = InPatternPosition { row: row + 1, channel: 0 };
-    //     let start_positon = self.data.binary_search_by_key(&start_position, key);
-    // }
+    fn index(&self, index: u16) -> &Self::Output {
+        debug_assert!(index <= self.rows);
+        let start_position = self.data.partition_point(|(pos, _)| {
+            *pos < InPatternPosition {
+                row: index,
+                channel: 0,
+            }
+        });
+        let end_position =
+            self.data[start_position..self.data.len()].partition_point(|(pos, _)| {
+                *pos < InPatternPosition {
+                    row: index + 1,
+                    channel: 0,
+                }
+            }) + start_position;
+        &self.data[start_position..end_position]
+    }
+}
+
+impl Index<InPatternPosition> for Pattern {
+    type Output = NoteEvent;
+
+    fn index(&self, index: InPatternPosition) -> &Self::Output {
+        self.get_event(index).unwrap()
+    }
+}
+
+impl IndexMut<InPatternPosition> for Pattern {
+    fn index_mut(&mut self, index: InPatternPosition) -> &mut Self::Output {
+        self.get_event_mut(index).unwrap()
+    }
 }
 
 /// assumes the Operations are correct (not out of bounds, ...)
 pub enum PatternOperation {
-    Load(Box<[Pattern; Song::<crate::sample::SampleData>::MAX_PATTERNS]>),
+    Load(Box<[Pattern; Song::<false>::MAX_PATTERNS]>),
     SetLength {
         pattern: usize,
         new_len: u16,

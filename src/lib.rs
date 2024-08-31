@@ -3,13 +3,13 @@ mod channel;
 pub mod file;
 pub mod live_audio;
 pub mod manager;
-mod playback;
+pub mod playback;
 pub mod sample;
 pub mod song;
 
 #[cfg(test)]
 mod tests {
-    use std::{default, num::NonZeroU16, path::Path, time::Duration};
+    use std::{num::NonZeroU16, time::Duration};
 
     use cpal::{traits::DeviceTrait, Sample};
     use live_audio::AudioMsgConfig;

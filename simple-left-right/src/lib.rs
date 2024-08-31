@@ -1,4 +1,5 @@
-use std::{cell::UnsafeCell, hint::unreachable_unchecked, sync::atomic::AtomicU8};
+// #![warn(clippy::all, clippy::pedantic, clippy::perf, clippy::style, clippy::complexity, clippy::suspicious, clippy::correctness)]
+use core::{cell::UnsafeCell, hint::unreachable_unchecked, sync::atomic::AtomicU8};
 
 pub mod reader;
 pub mod writer;
@@ -74,14 +75,14 @@ impl From<u8> for ReadState {
 struct Shared<T> {
     value_1: UnsafeCell<T>,
     value_2: UnsafeCell<T>,
-    // bit 0: is value 1 being read?
-    // bit 1: is value 2 being read?
-    // bit 3: which value should be read next (0: value 1, 1: value 2)
+    /// bit 0: is value 1 being read?
+    /// bit 1: is value 2 being read?
+    /// bit 3: which value should be read next (0: value 1, 1: value 2)
     state: AtomicU8,
 }
 
 unsafe impl<T: Send> Send for Shared<T> {}
-unsafe impl<T: Send> Sync for Shared<T> {}
+unsafe impl<T: Send + Sync> Sync for Shared<T> {}
 
 impl<T> Shared<T> {
     fn get_value(&self, ptr: Ptr) -> &UnsafeCell<T> {

@@ -2,10 +2,15 @@ use std::{num::NonZeroU16, time::Duration};
 
 use cpal::{traits::DeviceTrait, Sample};
 use impulse_engine::{
-    live_audio::AudioMsgConfig,
+    live_audio::{AudioMsgConfig, PlaybackSettings},
     manager::audio_manager::{AudioManager, OutputConfig},
     sample::{SampleData, SampleMetaData},
-    song::{self, note_event::NoteEvent, song::Song},
+    song::{
+        event_command::NoteCommand,
+        note_event::{NoteEvent, VolumeEffect},
+        pattern::InPatternPosition,
+        song::Song,
+    },
 };
 
 fn main() {
@@ -24,7 +29,45 @@ fn main() {
         ..Default::default()
     };
 
-    manager.edit_song().set_sample(1, meta, sample);
+    let mut song = manager.edit_song();
+    song.set_sample(0, meta, sample);
+    song.set_note_event(
+        0,
+        InPatternPosition { row: 0, channel: 0 },
+        NoteEvent {
+            note: 0,
+            sample_instr: 0,
+            vol: VolumeEffect::None,
+            command: NoteCommand::None,
+        },
+    );
+    song.set_note_event(
+        0,
+        InPatternPosition { row: 3, channel: 0 },
+        NoteEvent {
+            note: 0,
+            sample_instr: 0,
+            vol: VolumeEffect::None,
+            command: NoteCommand::None,
+        },
+    );
+    song.set_note_event(
+        0,
+        InPatternPosition { row: 3, channel: 1 },
+        NoteEvent {
+            note: 0,
+            sample_instr: 0,
+            vol: VolumeEffect::None,
+            command: NoteCommand::None,
+        },
+    );
+    song.set_order(
+        0,
+        impulse_engine::file::impulse_format::header::PatternOrder::Number(0),
+    );
+    song.finish();
+    // dbg!(manager.get_song());
+    // return;
 
     let default_device = AudioManager::default_device().unwrap();
     let default_config = default_device.default_output_config().unwrap();
@@ -41,23 +84,16 @@ fn main() {
             default_device,
             config,
             AudioMsgConfig {
-                buffer_finished: true,
+                playback_position: true,
                 ..Default::default()
             },
             20,
         )
         .unwrap();
 
-    let note_event = NoteEvent {
-        note: 0,
-        sample_instr: 1,
-        vol: song::note_event::VolumeEffect::None,
-        command: song::event_command::NoteCommand::None,
-    };
-    manager.play_note(note_event);
-    std::thread::sleep(Duration::from_secs(1));
-    manager.play_note(note_event);
-    std::thread::sleep(Duration::from_secs(1));
+    manager.play_song(PlaybackSettings {});
+
+    std::thread::sleep(Duration::from_secs(5));
     while let Ok(event) = recv.try_next() {
         println!("{event:?}");
     }

@@ -1,6 +1,6 @@
 use std::ops::{ControlFlow, Deref};
 
-use crate::sample::{SampleData, SampleMetaData};
+use crate::sample::{SampleData, SampleMetaData, SampleRef};
 
 use super::Frame;
 
@@ -32,8 +32,9 @@ impl Interpolation {
 }
 
 // 'a is the lifetime of the sampleData
-pub struct SamplePlayer<S: Deref<Target = SampleData>> {
-    sample: S,
+#[derive(Debug)]
+pub struct SamplePlayer<'sample, const GC: bool> {
+    sample: SampleRef<'sample, GC>,
     meta_data: SampleMetaData,
     // position in the sample, the next output frame should be.
     // Done this way, so 0 is a valid, useful and intuitive value
@@ -49,8 +50,12 @@ pub struct SamplePlayer<S: Deref<Target = SampleData>> {
     step_size: f32,
 }
 
-impl<S: Deref<Target = SampleData>> SamplePlayer<S> {
-    pub fn new(sample: (SampleMetaData, S), out_rate: u32, in_rate: u32) -> Self {
+impl<'sample, const GC: bool> SamplePlayer<'sample, GC> {
+    pub fn new(
+        sample: (SampleMetaData, SampleRef<'sample, GC>),
+        out_rate: u32,
+        in_rate: u32,
+    ) -> Self {
         Self {
             sample: sample.1,
             meta_data: sample.0,
@@ -85,12 +90,14 @@ impl<S: Deref<Target = SampleData>> SamplePlayer<S> {
         self.position.0 += floor as usize;
     }
 
-    pub fn iter<const INTERPOLATION: u8>(&mut self) -> SampleIter<INTERPOLATION, S> {
-        SampleIter {
-            sample_player: self,
-        }
+    #[inline]
+    pub fn iter<'player, const INTERPOLATION: u8>(
+        &'player mut self,
+    ) -> SampleIter<'sample, 'player, GC, INTERPOLATION> {
+        SampleIter { inner: self }
     }
 
+    #[inline]
     pub fn next<const INTERPOLATION: u8>(&mut self) -> Option<Frame> {
         match Interpolation::from(INTERPOLATION) {
             Interpolation::Nearest => self.next_nearest(),
@@ -141,19 +148,14 @@ impl<S: Deref<Target = SampleData>> SamplePlayer<S> {
     }
 }
 
-/// https://github.com/rust-lang/rust/issues/95174
-/// feature(adt_const_params)
-// a: lifetime of the samples, b: lifetime of the SamplePlayer
-pub(crate) struct SampleIter<'b, const INTERPOLATION: u8, S: Deref<Target = SampleData>> {
-    sample_player: &'b mut SamplePlayer<S>,
+pub struct SampleIter<'sample, 'player, const GC: bool, const INTERPOLATION: u8> {
+    inner: &'player mut SamplePlayer<'sample, GC>,
 }
 
-impl<const INTERPOLATION: u8, S: Deref<Target = SampleData>> Iterator
-    for SampleIter<'_, INTERPOLATION, S>
-{
+impl<const GC: bool, const INTERPOLATION: u8> Iterator for SampleIter<'_, '_, GC, INTERPOLATION> {
     type Item = Frame;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.sample_player.next::<INTERPOLATION>()
+        self.inner.next::<INTERPOLATION>()
     }
 }
