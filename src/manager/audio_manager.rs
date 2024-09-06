@@ -94,6 +94,21 @@ impl AudioManager {
         Ok(from_worker.1)
     }
 
+    /// pauses the audio thread. only works on some platforms (look at cpal docs)
+    pub fn pause_audio(&self) {
+        if let Some((stream, channel)) = &self.stream {
+            channel.send(ToWorkerMsg::StopPlayback).unwrap();
+            stream.pause().unwrap();
+        }
+    }
+
+    /// resume the audio thread. doesn't start any playback
+    pub fn resume_audio(&self) {
+        if let Some((stream, _)) = &self.stream {
+            stream.play().unwrap();
+        }
+    }
+
     /// need to think about the API more
     pub fn play_note(&self, note_event: crate::song::note_event::NoteEvent) {
         if let Some((_, channel)) = &self.stream {
@@ -104,6 +119,12 @@ impl AudioManager {
     pub fn play_song(&self, settings: PlaybackSettings) {
         if let Some((_, channel)) = &self.stream {
             channel.send(ToWorkerMsg::Playback(settings)).unwrap();
+        }
+    }
+
+    pub fn stop_playback(&self) {
+        if let Some((_, channel)) = &self.stream {
+            channel.send(ToWorkerMsg::StopPlayback).unwrap();
         }
     }
 }

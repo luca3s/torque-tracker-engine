@@ -7,7 +7,7 @@ use impulse_engine::{
     sample::{SampleData, SampleMetaData},
     song::{
         event_command::NoteCommand,
-        note_event::{NoteEvent, VolumeEffect},
+        note_event::{Note, NoteEvent, VolumeEffect},
         pattern::InPatternPosition,
         song::Song,
     },
@@ -26,47 +26,30 @@ fn main() {
         .collect();
     let meta = SampleMetaData {
         sample_rate: spec.sample_rate,
+        base_note: Note::new(64).unwrap(),
         ..Default::default()
     };
 
     let mut song = manager.edit_song();
     song.set_sample(0, meta, sample);
-    song.set_note_event(
-        0,
-        InPatternPosition { row: 0, channel: 0 },
-        NoteEvent {
-            note: 0,
-            sample_instr: 0,
-            vol: VolumeEffect::None,
-            command: NoteCommand::None,
-        },
-    );
-    song.set_note_event(
-        0,
-        InPatternPosition { row: 3, channel: 0 },
-        NoteEvent {
-            note: 0,
-            sample_instr: 0,
-            vol: VolumeEffect::None,
-            command: NoteCommand::None,
-        },
-    );
-    song.set_note_event(
-        0,
-        InPatternPosition { row: 3, channel: 1 },
-        NoteEvent {
-            note: 0,
-            sample_instr: 0,
-            vol: VolumeEffect::None,
-            command: NoteCommand::None,
-        },
-    );
+    for i in 0..12 {
+        song.set_note_event(
+            0,
+            InPatternPosition { row: i, channel: i as u8 },
+            NoteEvent {
+                note: Note::new(60 + i as u8).unwrap(),
+                sample_instr: 0,
+                vol: VolumeEffect::None,
+                command: NoteCommand::None,
+            },
+        );
+    }
     song.set_order(
         0,
         impulse_engine::file::impulse_format::header::PatternOrder::Number(0),
     );
     song.finish();
-    // dbg!(manager.get_song());
+    dbg!(manager.get_song());
     // return;
 
     let default_device = AudioManager::default_device().unwrap();

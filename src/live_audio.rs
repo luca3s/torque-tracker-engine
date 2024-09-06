@@ -1,5 +1,5 @@
 use std::fmt::Debug;
-use std::ops::{AddAssign, Deref, IndexMut};
+use std::ops::{AddAssign, IndexMut};
 use std::sync::mpsc::Receiver;
 
 use crate::audio_processing::sample::Interpolation;
@@ -7,11 +7,9 @@ use crate::audio_processing::Frame;
 use crate::manager::audio_manager::OutputConfig;
 use crate::playback::PlaybackPosition;
 use crate::song::note_event::NoteEvent;
-use crate::song::pattern::InPatternPosition;
 use crate::song::song::Song;
 use crate::{audio_processing::sample::SamplePlayer, playback::PlaybackState};
 use cpal::{Sample, SampleFormat};
-use futures::SinkExt;
 
 pub(crate) struct LiveAudio {
     song: simple_left_right::reader::Reader<Song<true>>,
@@ -56,15 +54,13 @@ impl LiveAudio {
                 ToWorkerMsg::StopPlayback => self.playback_state = None,
                 ToWorkerMsg::Playback(_) => {
                     self.playback_state = PlaybackState::<true>::new(&song, self.config.sample_rate);
-                    dbg!(song.deref());
-                    println!("playback started");
                 }
                 ToWorkerMsg::PlayEvent(note) => {
                     if let Some(sample) = &song.samples[usize::from(note.sample_instr)] {
                         let sample_player = SamplePlayer::new(
                             (sample.0, sample.1.get_ref()),
                             self.config.sample_rate / 2,
-                            sample.0.sample_rate,
+                            note.note
                         );
                         self.live_note = Some(sample_player);
                     }

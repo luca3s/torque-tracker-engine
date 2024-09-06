@@ -166,38 +166,3 @@ pub enum PatternOperation {
         channel: u8,
     },
 }
-
-// impl left_right::Absorb<PatternOperation> for [Pattern; Song::MAX_PATTERNS] {
-//     fn absorb_first(&mut self, operation: &mut PatternOperation, other: &Self) {
-//         // don't need it mutable
-//         let operation: &PatternOperation = operation;
-//         match operation {
-//             PatternOperation::Load(patterns) => *self = *patterns.clone(),
-//             PatternOperation::SetLength { pattern, new_len } => self[*pattern].set_length(*new_len),
-//             PatternOperation::SetEvent {
-//                 pattern,
-//                 row,
-//                 channel,
-//                 event,
-//             } => self[*pattern].set_event(
-//                 InPatternPosition {
-//                     row: *row,
-//                     channel: *channel,
-//                 },
-//                 *event,
-//             ),
-//             PatternOperation::RemoveEvent {
-//                 pattern,
-//                 row,
-//                 channel,
-//             } => self[*pattern].remove_event(InPatternPosition {
-//                 row: *row,
-//                 channel: *channel,
-//             }),
-//         }
-//     }
-
-//     fn sync_with(&mut self, first: &Self) {
-//         self.clone_from(first)
-//     }
-// }

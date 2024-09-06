@@ -5,7 +5,7 @@ use impulse_engine::{
     live_audio::AudioMsgConfig,
     manager::audio_manager::{AudioManager, OutputConfig},
     sample::{SampleData, SampleMetaData},
-    song::{self, note_event::NoteEvent, song::Song},
+    song::{self, note_event::{Note, NoteEvent}, song::Song},
 };
 
 fn main() {
@@ -49,7 +49,7 @@ fn main() {
         .unwrap();
 
     let note_event = NoteEvent {
-        note: 0,
+        note: Note::new(90).unwrap(),
         sample_instr: 1,
         vol: song::note_event::VolumeEffect::None,
         command: song::event_command::NoteCommand::None,

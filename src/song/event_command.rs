@@ -2,6 +2,7 @@
 pub enum NoteCommand {
     #[default]
     None,
+    SetSongSpeed(u8),
 }
 
 impl TryFrom<(u8, u8)> for NoteCommand {

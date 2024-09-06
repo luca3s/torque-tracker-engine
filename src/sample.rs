@@ -2,7 +2,7 @@ use std::{borrow::Borrow, fmt::Debug, mem::ManuallyDrop, ops::Deref};
 
 use basedrop::Shared;
 
-use crate::file::impulse_format::sample::VibratoWave;
+use crate::{file::impulse_format::sample::VibratoWave, song::note_event::Note};
 
 pub union SampleRef<'a, const GC: bool> {
     gc: ManuallyDrop<Shared<SampleData>>,
@@ -249,7 +249,7 @@ impl FromIterator<[f32; 2]> for SampleData {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct SampleMetaData {
     pub default_volume: u8,
     pub global_volume: u8,
@@ -259,20 +259,5 @@ pub struct SampleMetaData {
     pub vibrato_rate: u8,
     pub vibrato_waveform: VibratoWave,
     pub sample_rate: u32,
-}
-
-// crazy bad impl. not usable like this
-impl Default for SampleMetaData {
-    fn default() -> Self {
-        Self {
-            default_volume: Default::default(),
-            global_volume: Default::default(),
-            default_pan: Default::default(),
-            vibrato_speed: Default::default(),
-            vibrato_depth: Default::default(),
-            vibrato_rate: Default::default(),
-            vibrato_waveform: Default::default(),
-            sample_rate: Default::default(),
-        }
-    }
+    pub base_note: Note,
 }

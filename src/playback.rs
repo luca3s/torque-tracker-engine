@@ -3,7 +3,7 @@ use std::ops::ControlFlow;
 use crate::{
     audio_processing::{sample::SamplePlayer, Frame},
     file::impulse_format::header::PatternOrder,
-    song::song::Song,
+    song::{event_command::NoteCommand, song::Song},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,6 +19,8 @@ pub struct PlaybackState<'sample, const GC: bool> {
     tick: u8,
     frame: u32,
 
+    current_song_speed: u8,
+
     samplerate: u32,
 
     voices: Box<[Option<SamplePlayer<'sample, GC>>; PlaybackState::<true>::VOICES]>,
@@ -26,21 +28,6 @@ pub struct PlaybackState<'sample, const GC: bool> {
 
 impl<'sample, const GC: bool> PlaybackState<'sample, GC> {
     pub const VOICES: usize = 256;
-
-    /// need to refactor with PlaybackSettings (loop behaviour, start point, ...)
-    // pub fn new(song: &Song<GC>, samplerate: u32) -> Self {
-    //     let mut order = 0;
-    //     let pattern = song.next_pattern(&mut order);
-    //     Self {
-    //         order,
-    //         pattern: pattern.map(usize::from).unwrap_or(0),
-    //         row: 0,
-    //         tick: song.initial_speed,
-    //         frame: Self::frames_per_tick(samplerate, song.initial_tempo),
-    //         samplerate,
-    //         voices: Box::new(std::array::from_fn(|_| None)),
-    //     }
-    // }
 
     pub fn iter<'playback, 'song, const INTERPOLATION: u8>(
         &'playback mut self,
@@ -55,6 +42,13 @@ impl<'sample, const GC: bool> PlaybackState<'sample, GC> {
 
     pub fn get_position(&self) -> PlaybackPosition {
         self.position
+    }
+
+    fn process_command(&mut self, command: &NoteCommand) {
+        match command {
+            NoteCommand::None => (),
+            NoteCommand::SetSongSpeed(s) => self.current_song_speed = *s,
+        }
     }
 }
 
@@ -72,6 +66,7 @@ macro_rules! new {
             position,
             tick: $song.initial_speed,
             frame: Self::frames_per_tick($samplerate, $song.initial_tempo),
+            current_song_speed: $song.initial_speed,
             $samplerate,
             voices: Box::new(std::array::from_fn(|_| None)),
         };
@@ -99,6 +94,7 @@ impl<const GC: bool> std::fmt::Debug for PlaybackState<'_, GC> {
         f.debug_struct("PlaybackState")
             .field("position", &self.position)
             .field("tick", &self.tick)
+            .field("current_song_speed", &self.current_song_speed)
             .field("frame", &self.frame)
             .field("samplerate", &self.samplerate)
             .finish()?;
@@ -169,7 +165,7 @@ macro_rules! create_sample_players {
                 let player = SamplePlayer::new(
                     (*meta, sample.get_ref()),
                     $sel.state.samplerate,
-                    meta.sample_rate,
+                    event.note,
                 );
                 $sel.state.voices[usize::from(positions.channel)] = Some(player);
             }

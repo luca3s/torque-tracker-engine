@@ -1,7 +1,7 @@
 use crate::file::err::LoadDefects;
-use crate::file::{err, FileReader};
+use crate::file::err;
 use crate::song::event_command::NoteCommand;
-use crate::song::note_event::{NoteEvent, VolumeEffect};
+use crate::song::note_event::{Note, NoteEvent, VolumeEffect};
 use crate::song::pattern::{InPatternPosition, Pattern};
 use enumflags2::BitFlags;
 
@@ -58,7 +58,11 @@ pub fn load_pattern(buf: &[u8]) -> Result<(Pattern, BitFlags<LoadDefects>), err:
 
         // Note
         if (maskvar & 0b00000001) != 0 {
-            let note = *buf.get(read_pointer).ok_or(err::LoadErr::BufferTooShort)?;
+            let note = Note::new(*buf.get(read_pointer).ok_or(err::LoadErr::BufferTooShort)?);
+            if note.is_err() {
+                defects.insert(LoadDefects::OutOfBoundsValue);
+            }
+            let note = note.unwrap_or_default();
             read_pointer += 1;
 
             event.note = note;

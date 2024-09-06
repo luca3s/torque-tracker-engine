@@ -15,7 +15,7 @@ mod tests {
     use live_audio::AudioMsgConfig;
     use manager::audio_manager::{AudioManager, OutputConfig};
     use sample::{SampleData, SampleMetaData};
-    use song::{note_event::NoteEvent, song::Song};
+    use song::{note_event::{Note, NoteEvent}, song::Song};
 
     use super::*;
 
@@ -54,7 +54,7 @@ mod tests {
             .unwrap();
 
         let note_event = NoteEvent {
-            note: 0,
+            note: Note::new(0).unwrap(),
             sample_instr: 1,
             vol: song::note_event::VolumeEffect::None,
             command: song::event_command::NoteCommand::None,

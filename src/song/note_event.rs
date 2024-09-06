@@ -1,8 +1,69 @@
+use std::fmt::{Display, Write};
+
 use crate::song::event_command::NoteCommand;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Note(u8);
+
+impl Note {
+    pub fn new(value: u8) -> Result<Note, u8> {
+        if value > 199 {
+            Err(value)
+        } else {
+            Ok(Note(value))
+        }
+    }
+
+    pub const fn get_octave(self) -> u8 {
+        self.0 / 12
+    }
+
+    pub const fn get_note_name(self) -> &'static str {
+        match self.0 % 12 {
+            0 => "C",
+            1 => "C#",
+            2 => "D",
+            3 => "D#",
+            4 => "E",
+            5 => "F",
+            6 => "F#",
+            7 => "G",
+            8 => "G#",
+            9 => "A",
+            10 => "A#",
+            11 => "B",
+            _ => panic!()
+        }
+    }
+
+    pub fn get_frequency(self) -> f32 {
+        // taken from https://en.wikipedia.org/wiki/MIDI_tuning_standard
+        440. * ((f32::from(self.0) - 69.) / 12.).exp2()
+    }
+
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+}
+
+impl Display for Note {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.get_note_name())?;
+        f.write_char('-')?;
+        self.get_octave().fmt(f)?;
+        Ok(())
+    }
+}
+
+impl Default for Note {
+    fn default() -> Self {
+        Self(60) // C-5
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NoteEvent {
-    pub note: u8,
+    pub note: Note,
     pub sample_instr: u8,
     pub vol: VolumeEffect,
     pub command: NoteCommand,

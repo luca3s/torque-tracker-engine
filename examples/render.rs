@@ -4,7 +4,7 @@ use impulse_engine::{
     sample::{Sample, SampleData, SampleMetaData},
     song::{
         event_command::NoteCommand,
-        note_event::{NoteEvent, VolumeEffect},
+        note_event::{Note, NoteEvent, VolumeEffect},
         pattern::InPatternPosition,
         song::Song,
     },
@@ -33,7 +33,7 @@ fn main() {
     song.patterns[0].set_event(
         InPatternPosition { row: 0, channel: 0 },
         NoteEvent {
-            note: 0,
+            note: Note::default(),
             sample_instr: 0,
             vol: VolumeEffect::None,
             command: NoteCommand::None,
@@ -42,7 +42,7 @@ fn main() {
     song.patterns[0].set_event(
         InPatternPosition { row: 0, channel: 2 },
         NoteEvent {
-            note: 0,
+            note: Note::default(),
             sample_instr: 0,
             vol: VolumeEffect::None,
             command: NoteCommand::None,
