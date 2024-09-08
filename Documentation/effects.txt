@@ -1,0 +1,121 @@
+=                              788888888888888889
+=                              4  Pattern Edit  6
+=                              122222222222222223
+|
+| Summary of Effects.
+Unify Volume and General Effects.
+Unify Up and Down Effects by using signed values. (at transformation stage or already in the song stored effect)
+
+|
+|  Volume Column effects.
+|   Ax Fine volume slide up by x	-> in SamplePlayback
+|   Bx Fine volume slide down by x	-> in SamplePlayback
+|   Cx Volume slide up by x		-> in SamplePlayback
+|   Dx Volume slide down by x		-> in SamplePlayback
+|   Ex Pitch slide down by x		-> in SamplePlayback
+|   Fx Pitch slide up by x		-> in SamplePlayback
+|   Gx Slide to note with speed x	-> in SamplePlayback
+|   Hx Vibrato with depth x		-> in SamplePlayback
+|
+|  General effects.
+|   Axx Set song speed (hex)				-> apply once
+|   Bxx Jump to Order (hex)				-> apply once (same as above)
+|   Cxx Break to row xx (hex) of next pattern		-> apply once
+|   D0x Volume slide down by x				-> in SamplePlayback
+|   Dx0 Volume slide up by x				-> in SamplePlayback
+|   DFx Fine volume slide down by x			-> in SamplePlayback
+|   DxF Fine volume slide up by x			-> in SamplePlayback
+|   Exx Pitch slide down by xx				-> in SamplePlayback
+|   EFx Fine pitch slide down by x			-> in SamplePlayback
+|   EEx Extra fine pitch slide down by x		-> in SamplePlayback
+|   Fxx Pitch slide up by xx				-> in SamplePlayback
+|   FFx Fine pitch slide up by x			-> in SamplePlayback
+|   FEx Extra fine pitch slide up by x			-> in SamplePlayback
+|   Gxx Slide to note with speed xx			-> in SamplePlayback
+|   Hxy Vibrato with speed x, depth y			-> in SamplePlayback
+|   Ixy Tremor with ontime x and offtime y		-> in SamplePlayback
+|   Jxy Arpeggio with halftones x and y			-> Wrapper around SamplePlayback, which triggers the notes
+|   Kxx Dual Command: H00 & Dxx				-> in SamplePlayback
+|   Lxx Dual Command: G00 & Dxx				-> in SamplePlayback
+|   Mxx Set channel volume to xx (0->40h)		-> apply once
+|   N0x Channel volume slide down by x			-> in PlaybackState
+|   Nx0 Channel volume slide up by x			-> in PlaybackState
+|   NFx Fine channel volume slide down by x		-> in PlaybackState
+|   NxF Fine channel volume slide up by x		-> in PlaybackState
+|   Oxx Set sample offset to yxx00h, y set with SAy	-> apply once
+|   P0x Panning slide to right by x			-> in SamplePlayback
+|   Px0 Panning slide to left by x			-> in SamplePlayback
+|   PFx Fine panning slide to right by x		-> in SamplePlayback
+|   PxF Fine panning slide to left by x			-> in SamplePlayback
+|   Qxy Retrigger note every y ticks with volume modifier x
+|     Values for x:
+|       0: No volume change         8: Not used		-> Wrapper around SamplePlayback. Needs to be aware of ticks somehow
+|       1: -1                       9: +1			(registered tick callback? Probably self-referential) or it
+|       2: -2                       A: +2			would live in PlaybackState (but how)
+|       3: -4                       B: +4
+|       4: -8                       C: +8
+|       5: -16                      D: +16
+|       6: *2/3                     E: *3/2
+|       7: *1/2                     F: *2
+|   Rxy Tremolo with speed x, depth y			-> in SamplePlayback
+#   S0x Set filter					-> apply once
+#   S1x Set glissando control				-> apply once
+#   S2x Set finetune					-> apply once
+|   S3x Set vibrato waveform to type x			-> apply once
+|   S4x Set tremolo waveform to type x			-> apply once
+|   S5x Set panbrello waveform to type x		-> apply once
+|     Waveforms for commands S3x, S4x and S5x:
+|       0: Sine wave
+|       1: Ramp down
+|       2: Square wave
+|       3: Random wave
+|   S6x Pattern delay for x ticks			-> in PlaybackState
+|   S70 Past note cut					-> apply once
+|   S71 Past note off					-> apply once
+|   S72 Past note fade					-> apply once
+|   S73 Set NNA to note cut				-> apply once
+|   S74 Set NNA to continue				-> apply once
+|   S75 Set NNA to note off				-> apply once
+|   S76 Set NNA to note fade				-> apply once
+|   S77 Turn off volume envelope			-> apply once
+|   S78 Turn on volume envelope				-> apply once
+|   S79 Turn off panning envelope			-> apply once
+|   S7A Turn on panning envelope			-> apply once
+|   S7B Turn off pitch envelope				-> apply once
+|   S7C Turn on pitch envelope				-> apply once
+|   S8x Set panning position				-> apply once
+|   S91 Set surround sound				-> apply once
+|   SAy Set high value of sample offset yxx00h		-> apply once
+|   SB0 Set loopback point				-> PlaybackState |
+|   SBx Loop x times to loopback point			-> PlaybackState´|`
+|   SCx Note cut after x ticks				-> Wrapper around SamplePlayback. Aware of ticks
+|   SDx Note delay for x ticks				-> Wrapper around SamplePlayback. Aware of ticks
+|   SEx Pattern delay for x rows			-> PlaybackState
+|   SFx Set parameterised MIDI Macro			-> ??? No idea what this means
+|   T0x Tempo slide down by x				-> PlaybackState
+|   T1x Tempo slide up by x				-> PlaybackState
+|   Txx Set Tempo to xx (20h->0FFh)			-> apply once
+|   Uxy Fine vibrato with speed x, depth y		-> SamplePlayback
+|   Vxx Set global volume to xx (0->80h)		-> apply once
+|   W0x Global volume slide down by x			-> PlaybackState
+|   Wx0 Global volume slide up by x			-> PlaybackState
+|   WFx Fine global volume slide down by x		-> PlaybackState
+|   WxF Fine global volume slide up by x		-> PlaybackState
+|   Xxx Set panning position (0->0FFh)			-> apply once
+|   Yxy Panbrello with speed x, depth y			-> ?? Not sure what this is
+|   Zxx MIDI Macros					-> no idea
+|
+: FT2 effect translations (can only be saved in XM modules)
+:
+:  Volume column.
+:   $x Set vibrato speed to x            [$A0-$AF]	-> apply once
+:   <x Panning slide to left by x        [$D0-$DF]	-> SamplePlayback
+:   >x Panning slide to right by x       [$E0-$EF]	-> SamplePlayback
+:
+:  General effects.
+:   !xx Set volume                       [Cxx]		-> apply once
+:   $xx Key off                          [Kxx]		-> apply once
+:   &xx Set envelope position            [Lxx]		-> apply once? SamplePlayback needs facilities for it
+:
+
+Effects are processed with rising channel number

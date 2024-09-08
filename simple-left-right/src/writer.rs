@@ -1,7 +1,7 @@
 use crate::{reader::Reader, Ptr, ReadState, Shared};
 use core::{
     cell::UnsafeCell,
-    sync::atomic::{AtomicU8, Ordering, fence},
+    sync::atomic::{fence, AtomicU8, Ordering},
 };
 use std::{borrow::Borrow, collections::VecDeque, ops::Deref, sync::Arc};
 
@@ -163,87 +163,59 @@ impl<'a, T: Absorb<O>, O: Clone> Writer<T, O> {
 
 impl<T: Clone, O> Writer<T, O> {
     pub fn new(value: T) -> Self {
-        // allow value 1 to be read
-        let inner = Shared {
-            value_1: UnsafeCell::new(value.clone()),
-            value_2: UnsafeCell::new(value),
-            state: AtomicU8::new(0b000), // read from 0, no reads currently
-        };
-        // set value 2 to be written to
+        let mut shared: Arc<std::mem::MaybeUninit<Shared<T>>> = Arc::new_uninit();
+        let shared_ptr: *mut Shared<T> =
+            unsafe { Arc::get_mut(&mut shared).unwrap_unchecked() }.as_mut_ptr();
+
+        let state_ptr: *mut AtomicU8 = unsafe { &raw mut (*shared_ptr).state };
+        unsafe { state_ptr.write(AtomicU8::new(0b000)) };
+
+        let value_1_ptr: *mut UnsafeCell<T> = unsafe { &raw mut (*shared_ptr).value_1 };
+        // SAFETY: UnsafeCell<T> has the same memory Layout as T
+        unsafe { (value_1_ptr as *mut T).write(value.clone()) };
+
+        let value_2_ptr: *mut UnsafeCell<T> = unsafe { &raw mut (*shared_ptr).value_2 };
+        // SAFETY: UnsafeCell<T> has the same memory Layout as T
+        unsafe { (value_2_ptr as *mut T).write(value) };
+
+        // SAFETY: all fields of shared were initialized
+        let shared: Arc<Shared<T>> = unsafe { shared.assume_init() };
         Writer {
-            shared: Arc::new(inner),
+            shared,
             write_ptr: Ptr::Value2,
             op_buffer: VecDeque::new(),
             just_swapped: false,
         }
     }
-
-    // WAIT FOR ARC::new_uninit to be stabilized. probably on september 5th
-
-    // pub fn new_from_box(value: Box<T>) -> Self {
-    //     let shared = {
-    //         let value_1 = unsafe { transmute::<Box<T>, Box<ManuallyDrop<T>>>(value) };
-    //         let value_2 = value_1.clone();
-
-    //         let mut uninit = Arc::new(MaybeUninit::uninit());
-    //         let mut_ref = Arc::get_mut(&mut uninit).unwrap();
-    //         // build the UnsafeCells
-    //         unsafe { addr_of_mut!((*mut_ref.as_mut_ptr()).value_1).write(UnsafeCell::new(MaybeUninit::uninit())) };
-
-    //         // unsafe { addr_of_mut!((*mut_ref.as_mut_ptr()).value_1).write(UnsafeCell::new(T::default())) };
-    //         // unsafe { addr_of_mut!((*mut_ref.as_mut_ptr()).value_2).write(UnsafeCell::new(T::default())) };
-    //         unsafe { addr_of_mut!((*mut_ref.as_mut_ptr()).state).write(AtomicU32::new(0b000)) };
-
-    //         // assume init
-    //         unsafe { transmute::<Arc<MaybeUninit<Shared<T>>>, Arc<Shared<T>>>(uninit) }
-    //     };
-    //     Writer {
-    //         shared,
-    //         write_ptr: Ptr::Value2,
-    //         op_buffer: VecDeque::new(),
-    //         just_swapped: false,
-    //     }
-    // }
 }
 
 impl<T: Default, O> Default for Writer<T, O> {
+    /// Default impl of T needs to give the same result every time
     fn default() -> Self {
-        let shared = Shared {
-            value_1: UnsafeCell::new(T::default()),
-            value_2: UnsafeCell::new(T::default()),
-            state: AtomicU8::new(0b000),
-        };
+        let mut shared: Arc<std::mem::MaybeUninit<Shared<T>>> = Arc::new_uninit();
+        let shared_ptr: *mut Shared<T> =
+            unsafe { Arc::get_mut(&mut shared).unwrap_unchecked() }.as_mut_ptr();
+
+        let state_ptr: *mut AtomicU8 = unsafe { &raw mut (*shared_ptr).state };
+        unsafe { state_ptr.write(AtomicU8::new(0b000)) };
+
+        let value_1_ptr: *mut UnsafeCell<T> = unsafe { &raw mut (*shared_ptr).value_1 };
+        // SAFETY: UnsafeCell<T> has the same memory Layout as T
+        unsafe { (value_1_ptr as *mut T).write(T::default()) };
+
+        let value_2_ptr: *mut UnsafeCell<T> = unsafe { &raw mut (*shared_ptr).value_2 };
+        // SAFETY: UnsafeCell<T> has the same memory Layout as T
+        unsafe { (value_2_ptr as *mut T).write(T::default()) };
+
+        // SAFETY: all fields of shared were initialized
+        let shared: Arc<Shared<T>> = unsafe { shared.assume_init() };
         Writer {
-            shared: Arc::new(shared),
+            shared,
             write_ptr: Ptr::Value2,
             op_buffer: VecDeque::new(),
             just_swapped: false,
         }
     }
-
-    //     /// default impl needs to give the same result every time
-    //     /// if default panics memory will probably be leaked
-    //     pub fn new_from_default() -> Self {
-    //         let shared = {
-    //             let mut uninit: Arc<MaybeUninit<Shared<T>>> = Arc::new(MaybeUninit::uninit());
-    //             // get mut ref to arc because only one arc exists
-    //             let mut_ref = Arc::get_mut(&mut uninit).unwrap();
-
-    //             // initialize everything
-    //             unsafe { addr_of_mut!((*mut_ref.as_mut_ptr()).value_1).write(UnsafeCell::new(T::default())) };
-    //             unsafe { addr_of_mut!((*mut_ref.as_mut_ptr()).value_2).write(UnsafeCell::new(T::default())) };
-    //             unsafe { addr_of_mut!((*mut_ref.as_mut_ptr()).state).write(AtomicU32::new(0b000)) };
-
-    //             // assume init
-    //             unsafe { transmute::<Arc<MaybeUninit<Shared<T>>>, Arc<Shared<T>>>(uninit) }
-    //         };
-    //         Writer {
-    //             shared,
-    //             write_ptr: Ptr::Value2,
-    //             op_buffer: VecDeque::new(),
-    //             just_swapped: false,
-    //         }
-    //     }
 }
 
 impl<T, O> Borrow<T> for Writer<T, O> {

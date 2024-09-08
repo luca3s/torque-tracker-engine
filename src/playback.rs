@@ -3,7 +3,7 @@ use std::ops::ControlFlow;
 use crate::{
     audio_processing::{sample::SamplePlayer, Frame},
     file::impulse_format::header::PatternOrder,
-    song::{event_command::NoteCommand, song::Song},
+    song::song::Song,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,13 +42,6 @@ impl<'sample, const GC: bool> PlaybackState<'sample, GC> {
 
     pub fn get_position(&self) -> PlaybackPosition {
         self.position
-    }
-
-    fn process_command(&mut self, command: &NoteCommand) {
-        match command {
-            NoteCommand::None => (),
-            NoteCommand::SetSongSpeed(s) => self.current_song_speed = *s,
-        }
     }
 }
 
@@ -160,13 +153,12 @@ impl<const INTERPOLATION: u8, const GC: bool> PlaybackIter<'_, '_, '_, INTERPOLA
 /// The compiler inferes the right types for each macro call
 macro_rules! create_sample_players {
     ($sel:ident) => {
-        for (positions, event) in &$sel.song.patterns[$sel.state.position.pattern][$sel.state.position.row] {
+        for (positions, event) in
+            &$sel.song.patterns[$sel.state.position.pattern][$sel.state.position.row]
+        {
             if let Some((meta, sample)) = &$sel.song.samples[usize::from(event.sample_instr)] {
-                let player = SamplePlayer::new(
-                    (*meta, sample.get_ref()),
-                    $sel.state.samplerate,
-                    event.note,
-                );
+                let player =
+                    SamplePlayer::new((*meta, sample.get_ref()), $sel.state.samplerate, event.note);
                 $sel.state.voices[usize::from(positions.channel)] = Some(player);
             }
         }

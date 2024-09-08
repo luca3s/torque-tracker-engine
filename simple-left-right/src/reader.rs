@@ -1,8 +1,8 @@
 use core::cell::UnsafeCell;
 use core::ops::Deref;
 use core::sync::atomic::Ordering;
-use std::sync::Arc;
 use core::{marker::PhantomData, sync::atomic::AtomicU8};
+use std::sync::Arc;
 
 use crate::{Ptr, Shared};
 
