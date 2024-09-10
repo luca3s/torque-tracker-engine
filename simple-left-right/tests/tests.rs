@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use simple_left_right::writer::Writer;
+    use simple_left_right::Writer;
     use std::time::Duration;
 
     include!("utilities.rs");
@@ -156,15 +156,12 @@ mod tests {
     }
 
     #[test]
+    /// need to use all the fields of inner otherwise miri can't find uninit memory
     fn default_init() {
-        let writer: Writer<i32, CounterAddOp> = Writer::default();
+        let mut writer: Writer<i32, CounterAddOp> = Writer::default();
+        let mut reader = writer.build_reader().unwrap();
+        // read both of the values and with locking also access the Atomic
+        assert_eq!(*reader.lock(), i32::default());
         assert_eq!(*writer, i32::default());
     }
-
-    // #[test]
-    // fn box_init() {
-    //     let value = Box::new(2);
-    //     let writer = Writer::new_from_box(value);
-    //     assert_eq!(*writer.as_ref(), 2);
-    // }
 }

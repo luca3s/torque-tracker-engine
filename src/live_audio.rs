@@ -12,7 +12,7 @@ use crate::{audio_processing::sample::SamplePlayer, playback::PlaybackState};
 use cpal::{Sample, SampleFormat};
 
 pub(crate) struct LiveAudio {
-    song: simple_left_right::reader::Reader<Song<true>>,
+    song: simple_left_right::Reader<Song<true>>,
     playback_state: Option<PlaybackState<'static, true>>,
     live_note: Option<SamplePlayer<'static, true>>,
     manager: Receiver<ToWorkerMsg>,
@@ -26,7 +26,7 @@ impl LiveAudio {
     const INTERPOLATION: u8 = Interpolation::Linear as u8;
 
     pub fn new(
-        song: simple_left_right::reader::Reader<Song<true>>,
+        song: simple_left_right::Reader<Song<true>>,
         manager: Receiver<ToWorkerMsg>,
         audio_msg_config: AudioMsgConfig,
         to_app: futures::channel::mpsc::Sender<FromWorkerMsg>,

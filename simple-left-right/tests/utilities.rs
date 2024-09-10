@@ -1,4 +1,4 @@
-use simple_left_right::writer::Absorb;
+use simple_left_right::Absorb;
 
 #[cfg(test)]
 #[derive(Clone)]

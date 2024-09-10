@@ -152,7 +152,7 @@ pub(crate) enum SongOperation {
     SetOrder(usize, PatternOrder),
 }
 
-impl simple_left_right::writer::Absorb<SongOperation> for Song<true> {
+impl simple_left_right::Absorb<SongOperation> for Song<true> {
     fn absorb(&mut self, operation: SongOperation) {
         match operation {
             SongOperation::SetVolume(chan, val) => self.volume[chan] = val,

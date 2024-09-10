@@ -16,7 +16,7 @@ use crate::{
 };
 
 pub struct AudioManager {
-    song: simple_left_right::writer::Writer<Song<true>, SongOperation>,
+    song: simple_left_right::Writer<Song<true>, SongOperation>,
     gc: Collector,
     gc_handle: Handle,
     stream: Option<(cpal::Stream, std::sync::mpsc::Sender<ToWorkerMsg>)>,
@@ -26,7 +26,7 @@ impl AudioManager {
     pub fn new(song: Song<false>) -> Self {
         let gc = basedrop::Collector::new();
         let gc_handle = gc.handle();
-        let left_right = simple_left_right::writer::Writer::new(song.to_gc(&gc_handle));
+        let left_right: simple_left_right::Writer<Song<true>, SongOperation> = simple_left_right::Writer::new(song.to_gc(&gc_handle));
 
         Self {
             song: left_right,
@@ -137,7 +137,7 @@ impl AudioManager {
 // need manuallyDrop because i need consume on drop behaviour
 pub struct SongEdit<'a> {
     song: std::mem::ManuallyDrop<
-        simple_left_right::writer::WriteGuard<'a, Song<true>, SongOperation>,
+        simple_left_right::WriteGuard<'a, Song<true>, SongOperation>,
     >,
     gc_handle: &'a Handle,
 }
