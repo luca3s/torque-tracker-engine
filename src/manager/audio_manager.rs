@@ -17,21 +17,18 @@ use crate::{
 
 pub struct AudioManager {
     song: simple_left_right::Writer<Song<true>, SongOperation>,
-    gc: Collector,
-    gc_handle: Handle,
+    gc: std::mem::ManuallyDrop<Collector>,
     stream: Option<(cpal::Stream, std::sync::mpsc::Sender<ToWorkerMsg>)>,
 }
 
 impl AudioManager {
     pub fn new(song: Song<false>) -> Self {
-        let gc = basedrop::Collector::new();
-        let gc_handle = gc.handle();
-        let left_right: simple_left_right::Writer<Song<true>, SongOperation> = simple_left_right::Writer::new(song.to_gc(&gc_handle));
+        let gc = std::mem::ManuallyDrop::new(basedrop::Collector::new());
+        let left_right: simple_left_right::Writer<Song<true>, SongOperation> = simple_left_right::Writer::new(song.to_gc(&gc.handle()));
 
         Self {
             song: left_right,
             gc,
-            gc_handle,
             stream: None,
         }
     }
@@ -48,7 +45,7 @@ impl AudioManager {
     pub fn edit_song(&mut self) -> SongEdit {
         SongEdit {
             song: std::mem::ManuallyDrop::new(self.song.lock()),
-            gc_handle: &self.gc_handle,
+            gc_handle: self.gc.handle(),
         }
     }
 
@@ -127,6 +124,23 @@ impl AudioManager {
             channel.send(ToWorkerMsg::StopPlayback).unwrap();
         }
     }
+
+    pub fn deinit_audio(&mut self) {
+        if let Some((stream, send)) = self.stream.take() {
+            send.send(ToWorkerMsg::StopPlayback).unwrap();
+            drop(stream);
+            self.gc.collect();
+        }
+    }
+}
+
+impl Drop for AudioManager {
+    fn drop(&mut self) {
+        self.deinit_audio();
+        let mut gc = unsafe { std::mem::ManuallyDrop::take(&mut self.gc) };
+        gc.collect();
+        assert!(gc.try_cleanup().is_ok());
+    }
 }
 
 /// the changes made to the song will be made available to the playing live audio as soon as
@@ -139,13 +153,13 @@ pub struct SongEdit<'a> {
     song: std::mem::ManuallyDrop<
         simple_left_right::WriteGuard<'a, Song<true>, SongOperation>,
     >,
-    gc_handle: &'a Handle,
+    gc_handle: Handle,
 }
 
 impl SongEdit<'_> {
     pub fn set_sample(&mut self, num: usize, meta: SampleMetaData, data: SampleData) {
         assert!(num < Song::<false>::MAX_SAMPLES);
-        let op = SongOperation::SetSample(num, meta, Shared::new(self.gc_handle, data));
+        let op = SongOperation::SetSample(num, meta, Shared::new(&self.gc_handle, data));
         self.song.apply_op(op);
     }
 
