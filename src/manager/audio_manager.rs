@@ -1,7 +1,8 @@
-use std::num::NonZeroU16;
+use std::{mem::ManuallyDrop, num::NonZeroU16};
 
 use basedrop::{Collector, Handle, Shared};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use simple_left_right::{WriteGuard, Writer};
 
 use crate::{
     channel::Pan,
@@ -10,14 +11,14 @@ use crate::{
     sample::{SampleData, SampleMetaData},
     song::{
         note_event::NoteEvent,
-        pattern::InPatternPosition,
+        pattern::{InPatternPosition, Pattern, PatternOperation},
         song::{Song, SongOperation},
     },
 };
 
 pub struct AudioManager {
-    song: simple_left_right::Writer<Song<true>, SongOperation>,
-    gc: std::mem::ManuallyDrop<Collector>,
+    song: Writer<Song<true>, SongOperation>,
+    gc: ManuallyDrop<Collector>,
     stream: Option<(cpal::Stream, std::sync::mpsc::Sender<ToWorkerMsg>)>,
 }
 
@@ -99,14 +100,13 @@ impl AudioManager {
         }
     }
 
-    /// resume the audio thread. doesn't start any playback
+    /// resume the audio thread. doesn't start any playback (only on some platforms, see cpal docs for stream.pause())
     pub fn resume_audio(&self) {
         if let Some((stream, _)) = &self.stream {
             stream.play().unwrap();
         }
     }
 
-    /// need to think about the API more
     pub fn play_note(&self, note_event: crate::song::note_event::NoteEvent) {
         if let Some((_, channel)) = &self.stream {
             channel.send(ToWorkerMsg::PlayEvent(note_event)).unwrap();
@@ -150,9 +150,7 @@ impl Drop for AudioManager {
 // should do all the verfication of
 // need manuallyDrop because i need consume on drop behaviour
 pub struct SongEdit<'a> {
-    song: std::mem::ManuallyDrop<
-        simple_left_right::WriteGuard<'a, Song<true>, SongOperation>,
-    >,
+    song: ManuallyDrop<WriteGuard<'a, Song<true>, SongOperation>>,
     gc_handle: Handle,
 }
 
@@ -175,23 +173,10 @@ impl SongEdit<'_> {
         self.song.apply_op(op);
     }
 
-    pub fn set_note_event(
-        &mut self,
-        pattern: usize,
-        position: InPatternPosition,
-        event: NoteEvent,
-    ) {
+    pub fn pattern_operation(&mut self, pattern: usize, op: PatternOperation) {
         assert!(pattern < Song::<false>::MAX_PATTERNS);
-        assert!(position.row < self.song.patterns[pattern].row_count());
-        let op = SongOperation::SetNoteEvent(pattern, position, event);
-        self.song.apply_op(op);
-    }
-
-    pub fn remove_note_event(&mut self, pattern: usize, position: InPatternPosition) {
-        assert!(pattern < Song::<false>::MAX_PATTERNS);
-        assert!(position.row < self.song.patterns[pattern].row_count());
-        let op = SongOperation::DeleteNoteEvent(pattern, position);
-        self.song.apply_op(op);
+        assert!(self.song.patterns[pattern].operation_is_valid(&op));
+        self.song.apply_op(SongOperation::PatternOperation(pattern, op));
     }
 
     pub fn set_order(&mut self, idx: usize, order: PatternOrder) {
@@ -205,9 +190,7 @@ impl SongEdit<'_> {
     }
 
     /// Finish the changes and publish them to the live playing song
-    pub fn finish(self) {
-        drop(self)
-    }
+    pub fn finish(self) {}
 }
 
 impl Drop for SongEdit<'_> {
@@ -215,7 +198,7 @@ impl Drop for SongEdit<'_> {
         // SAFETY:
         // the ManuallyDrop isn't used after this as this is the drop function
         // can't use into_inner, as i only have &mut not owned
-        unsafe { std::mem::ManuallyDrop::take(&mut self.song) }.swap()
+        unsafe { ManuallyDrop::take(&mut self.song) }.swap()
     }
 }
 

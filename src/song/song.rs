@@ -21,7 +21,7 @@ use crate::song::pattern::Pattern;
 use basedrop::Shared;
 
 use super::note_event::NoteEvent;
-use super::pattern::InPatternPosition;
+use super::pattern::{InPatternPosition, PatternOperation};
 
 #[derive(Clone)]
 pub struct Project<const GC: bool> {
@@ -147,8 +147,7 @@ pub(crate) enum SongOperation {
     SetVolume(usize, u8),
     SetPan(usize, Pan),
     SetSample(usize, SampleMetaData, Shared<SampleData>),
-    SetNoteEvent(usize, InPatternPosition, NoteEvent),
-    DeleteNoteEvent(usize, InPatternPosition),
+    PatternOperation(usize, PatternOperation),
     SetOrder(usize, PatternOrder),
 }
 
@@ -157,15 +156,8 @@ impl simple_left_right::Absorb<SongOperation> for Song<true> {
         match operation {
             SongOperation::SetVolume(chan, val) => self.volume[chan] = val,
             SongOperation::SetPan(chan, val) => self.pan[chan] = val,
-            SongOperation::SetSample(sample, meta, data) => {
-                self.samples[sample] = Some((meta, Sample::<true>::new(data)))
-            }
-            SongOperation::SetNoteEvent(pattern, position, event) => {
-                self.patterns[pattern].set_event(position, event)
-            }
-            SongOperation::DeleteNoteEvent(pattern, position) => {
-                self.patterns[pattern].remove_event(position)
-            }
+            SongOperation::SetSample(sample, meta, data) => self.samples[sample] = Some((meta, Sample::<true>::new(data))),
+            SongOperation::PatternOperation(pattern, op) => self.patterns[pattern].apply_operation(op),
             SongOperation::SetOrder(idx, order) => self.pattern_order[idx] = order,
         }
     }

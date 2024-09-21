@@ -10,9 +10,10 @@ use crate::song::note_event::NoteEvent;
 use crate::song::song::Song;
 use crate::{audio_processing::sample::SamplePlayer, playback::PlaybackState};
 use cpal::{Sample, SampleFormat};
+use simple_left_right::Reader;
 
 pub(crate) struct LiveAudio {
-    song: simple_left_right::Reader<Song<true>>,
+    song: Reader<Song<true>>,
     playback_state: Option<PlaybackState<'static, true>>,
     live_note: Option<SamplePlayer<'static, true>>,
     manager: Receiver<ToWorkerMsg>,
@@ -26,7 +27,7 @@ impl LiveAudio {
     const INTERPOLATION: u8 = Interpolation::Linear as u8;
 
     pub fn new(
-        song: simple_left_right::Reader<Song<true>>,
+        song: Reader<Song<true>>,
         manager: Receiver<ToWorkerMsg>,
         audio_msg_config: AudioMsgConfig,
         to_app: futures::channel::mpsc::Sender<FromWorkerMsg>,
@@ -45,7 +46,7 @@ impl LiveAudio {
     }
 
     #[inline]
-    /// returns if work was done
+    /// returns true if work was done
     fn fill_internal_buffer(&mut self) -> bool {
         let song = self.song.lock();
 
@@ -134,42 +135,28 @@ impl LiveAudio {
                     * usize::from(self.config.channel_count.get())
             );
 
-            // actual audio work
-            if self.fill_internal_buffer() {
-                // convert to the right output format
-                match data.sample_format() {
-                    SampleFormat::I8 => self.fill_from_internal::<i8>(data.as_slice_mut().unwrap()),
-                    SampleFormat::I16 => {
-                        self.fill_from_internal::<i16>(data.as_slice_mut().unwrap())
-                    }
-                    SampleFormat::I32 => {
-                        self.fill_from_internal::<i32>(data.as_slice_mut().unwrap())
-                    }
-                    SampleFormat::I64 => {
-                        self.fill_from_internal::<i64>(data.as_slice_mut().unwrap())
-                    }
-                    SampleFormat::U8 => self.fill_from_internal::<u8>(data.as_slice_mut().unwrap()),
-                    SampleFormat::U16 => {
-                        self.fill_from_internal::<u16>(data.as_slice_mut().unwrap())
-                    }
-                    SampleFormat::U32 => {
-                        self.fill_from_internal::<u32>(data.as_slice_mut().unwrap())
-                    }
-                    SampleFormat::U64 => {
-                        self.fill_from_internal::<u64>(data.as_slice_mut().unwrap())
-                    }
-                    SampleFormat::F32 => {
-                        self.fill_from_internal::<f32>(data.as_slice_mut().unwrap())
-                    }
-                    SampleFormat::F64 => {
-                        self.fill_from_internal::<f64>(data.as_slice_mut().unwrap())
-                    }
-                    /*
-                    I want to support all formats. This panic being triggered means that there is a version
-                    mismatch between cpal and this library.
-                    */
-                    _ => panic!("Sample Format not supported."),
-                }
+            // actual audio work, if false no work was done
+            if !self.fill_internal_buffer() {
+                return;
+            }
+
+            // convert to the right output format
+            match data.sample_format() {
+                SampleFormat::I8 => self.fill_from_internal::<i8>(data.as_slice_mut().unwrap()),
+                SampleFormat::I16 => self.fill_from_internal::<i16>(data.as_slice_mut().unwrap()),
+                SampleFormat::I32 => self.fill_from_internal::<i32>(data.as_slice_mut().unwrap()),
+                SampleFormat::I64 => self.fill_from_internal::<i64>(data.as_slice_mut().unwrap()),
+                SampleFormat::U8 => self.fill_from_internal::<u8>(data.as_slice_mut().unwrap()),
+                SampleFormat::U16 => self.fill_from_internal::<u16>(data.as_slice_mut().unwrap()),
+                SampleFormat::U32 => self.fill_from_internal::<u32>(data.as_slice_mut().unwrap()),
+                SampleFormat::U64 => self.fill_from_internal::<u64>(data.as_slice_mut().unwrap()),
+                SampleFormat::F32 => self.fill_from_internal::<f32>(data.as_slice_mut().unwrap()),
+                SampleFormat::F64 => self.fill_from_internal::<f64>(data.as_slice_mut().unwrap()),
+                /*
+                I want to support all formats. This panic being triggered means that there is a version
+                mismatch between cpal and this library.
+                */
+                _ => panic!("Sample Format not supported."),
             }
 
             if self.audio_msg_config.buffer_finished {

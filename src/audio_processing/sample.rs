@@ -1,6 +1,9 @@
 use std::ops::{ControlFlow, Deref};
 
-use crate::{sample::{SampleData, SampleMetaData, SampleRef}, song::note_event::{Note, NoteEvent}};
+use crate::{
+    sample::{SampleData, SampleMetaData, SampleRef},
+    song::note_event::Note,
+};
 
 use super::Frame;
 
@@ -61,7 +64,12 @@ impl<'sample, const GC: bool> SamplePlayer<'sample, GC> {
             meta_data: sample.0,
             position: (SampleData::PAD_SIZE_EACH, 0.),
             out_rate,
-            step_size: Self::compute_step_size(sample.0.sample_rate, out_rate, sample.0.base_note, note),
+            step_size: Self::compute_step_size(
+                sample.0.sample_rate,
+                out_rate,
+                sample.0.base_note,
+                note,
+            ),
             note,
         }
     }
@@ -74,12 +82,26 @@ impl<'sample, const GC: bool> SamplePlayer<'sample, GC> {
         }
     }
 
-    fn compute_step_size(in_rate: u32, out_rate: u32, sample_base_note: Note, playing_note: Note) -> f32 {
-        (f32::from(i16::from(playing_note.get()) - i16::from(sample_base_note.get())) / 12. ).exp2() * (out_rate as f32 / in_rate as f32)
+    fn compute_step_size(
+        in_rate: u32,
+        out_rate: u32,
+        sample_base_note: Note,
+        playing_note: Note,
+    ) -> f32 {
+        // original formula: (outrate / inrate) * (playing_freq / sample_base_freq).
+        // Where each freq is computed with MIDI tuning standard formula: 440 * 2^((note - 69)/12)
+        // manually reduced formula: 2^((play_note - sample_base_note)/12) * (outrate / inrate)
+        // herbie (https://herbie.uwplse.org/demo/index.html) can't optimize further: https://herbie.uwplse.org/demo/e096ef89ee257ad611dd56378bd139a065a6bea0.02e7ec5a3709ad3e06968daa97db50d636f1e44b/graph.html
+        (f32::from(i16::from(playing_note.get()) - i16::from(sample_base_note.get())) / 12.).exp2() * (out_rate as f32 / in_rate as f32)
     }
 
     fn set_step_size(&mut self) {
-        self.step_size = Self::compute_step_size(self.meta_data.sample_rate, self.out_rate, self.meta_data.base_note, self.note);
+        self.step_size = Self::compute_step_size(
+            self.meta_data.sample_rate,
+            self.out_rate,
+            self.meta_data.base_note,
+            self.note,
+        );
     }
 
     pub fn set_out_samplerate(&mut self, samplerate: u32) {
@@ -120,10 +142,9 @@ impl<'sample, const GC: bool> SamplePlayer<'sample, GC> {
                 Frame::from((diff * self.position.1) + mono[self.position.0])
             }
             SampleData::Stereo(stereo) => {
-                let diff: Frame =
-                    Frame::from(stereo[self.position.0 + 1]) - Frame::from(stereo[self.position.0]);
+                let diff = Frame::from(stereo[self.position.0 + 1]) - Frame::from(stereo[self.position.0]);
 
-                (diff * self.position.1) + stereo[self.position.0].into()
+                (diff * self.position.1) + Frame::from(stereo[self.position.0])
             }
         };
 

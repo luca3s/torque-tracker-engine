@@ -1,10 +1,28 @@
-#![warn(clippy::all, clippy::pedantic, clippy::perf, clippy::style, clippy::complexity, clippy::suspicious, clippy::correctness)]
+#![warn(
+    clippy::all,
+    clippy::pedantic,
+    clippy::perf,
+    clippy::style,
+    clippy::complexity,
+    clippy::suspicious,
+    clippy::correctness
+)]
 
-use std::{borrow::Borrow, cell::UnsafeCell, collections::VecDeque, marker::PhantomData, ops::Deref, sync::{atomic::{fence, AtomicU8, Ordering}, Arc}};
-
-use inner::{Ptr, ReadState, Shared};
+use std::{
+    borrow::Borrow,
+    cell::UnsafeCell,
+    collections::VecDeque,
+    marker::PhantomData,
+    ops::Deref,
+    sync::{
+        atomic::{fence, AtomicU8, Ordering},
+        Arc,
+    },
+};
 
 mod inner;
+
+use inner::{Ptr, ReadState, Shared};
 
 pub trait Absorb<O> {
     /// has to be deterministic. Operations will be applied in the same order to both buffers
@@ -129,8 +147,8 @@ impl<T: Absorb<O>, O: Clone> WriteGuard<'_, T, O> {
             inner.value_1.get_mut().absorb(operation.clone());
             inner.value_2.get_mut().absorb(operation);
         } else {
-            self.get_data_mut().absorb(operation.clone());
-            self.writer.op_buffer.push_back(operation);
+            self.writer.op_buffer.push_back(operation.clone());
+            self.get_data_mut().absorb(operation);
         }
     }
 }
@@ -313,7 +331,7 @@ where
     }
 }
 
-/// This impl is only ok because this is an internal library. 
+/// This impl is only ok because this is an internal library.
 /// If one would publish the library it would lead to function name collisions
 /// If there ever is a internal collision, rename a function or remove this impl
 impl<T, O> Deref for Writer<T, O> {

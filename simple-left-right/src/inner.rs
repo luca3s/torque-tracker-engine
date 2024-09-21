@@ -1,4 +1,3 @@
-
 use core::{cell::UnsafeCell, hint::unreachable_unchecked, sync::atomic::AtomicU8};
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]

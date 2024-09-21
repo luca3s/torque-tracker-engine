@@ -43,6 +43,11 @@ impl<'sample, const GC: bool> PlaybackState<'sample, GC> {
     pub fn get_position(&self) -> PlaybackPosition {
         self.position
     }
+
+    pub fn set_samplerate(&mut self, samplerate: u32) {
+        self.samplerate = samplerate;
+        self.voices.iter_mut().flatten().for_each(|voice| voice.set_out_samplerate(samplerate));
+    }
 }
 
 macro_rules! new {

@@ -8,7 +8,7 @@ use impulse_engine::{
     song::{
         event_command::NoteCommand,
         note_event::{Note, NoteEvent, VolumeEffect},
-        pattern::InPatternPosition,
+        pattern::{InPatternPosition, PatternOperation},
         song::Song,
     },
 };
@@ -33,16 +33,19 @@ fn main() {
     let mut song = manager.edit_song();
     song.set_sample(0, meta, sample);
     for i in 0..12 {
-        song.set_note_event(
-            0,
-            InPatternPosition { row: i, channel: i as u8 },
-            NoteEvent {
+        let command = PatternOperation::SetEvent {
+            position: InPatternPosition {
+                row: i,
+                channel: i as u8,
+            },
+            event: NoteEvent {
                 note: Note::new(60 + i as u8).unwrap(),
                 sample_instr: 0,
                 vol: VolumeEffect::None,
                 command: NoteCommand::None,
             },
-        );
+        };
+        song.pattern_operation(0, command);
     }
     song.set_order(
         0,
@@ -77,7 +80,8 @@ fn main() {
     manager.play_song(PlaybackSettings {});
 
     std::thread::sleep(Duration::from_secs(5));
-    while let Ok(event) = recv.try_next() {
-        println!("{event:?}");
-    }
+    manager.deinit_audio();
+    // while let Ok(event) = recv.try_next() {
+    //     println!("{event:?}");
+    // }
 }
