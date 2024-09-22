@@ -2,29 +2,23 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::io;
 
-use enumflags2::bitflags;
-
-#[derive(Debug)]
-pub(crate) struct TooShortErr;
-
-impl Display for TooShortErr {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Buffer too short")
-    }
-}
-
-impl Error for TooShortErr {}
-
 #[derive(Debug)]
 pub enum LoadErr {
     CantReadFile,
     Invalid,
     BufferTooShort,
+    /// A defect handler function returned ControlFlow::Break
+    Cancelled,
+    IO(io::Error),
 }
 
 impl From<io::Error> for LoadErr {
-    fn from(_: io::Error) -> Self {
-        Self::CantReadFile
+    fn from(err: io::Error) -> Self {
+        if err.kind() == io::ErrorKind::UnexpectedEof {
+            Self::BufferTooShort
+        } else {
+            Self::IO(err)
+        }
     }
 }
 
@@ -36,21 +30,20 @@ impl Display for LoadErr {
 
 impl Error for LoadErr {}
 
-impl From<TooShortErr> for LoadErr {
-    fn from(_value: TooShortErr) -> Self {
-        LoadErr::BufferTooShort
-    }
-}
-
+/// TODO: https://users.rust-lang.org/t/validation-monad/117894/6
+/// 
+/// this is a way cleaner and nicer approach. Provice a lot of data about the Error, like position in file, expected value, received value, ...
+/// maybe even allow to cancel the parsing via ControlFlow<(), ()>
+/// 
 /// load was partially successful. These are the defects that are in the now loaded project
-#[bitflags]
 #[derive(Debug, Clone, Copy)]
-#[repr(u8)]
-pub enum LoadDefects {
+pub enum LoadDefect {
     /// deletes the effect
     UnknownEffect,
     /// replaced with empty text
     InvalidText,
     /// tries to replace with a sane default value
     OutOfBoundsValue,
+    /// skips loading of the pointed to value
+    OutOfBoundsPtr,
 }

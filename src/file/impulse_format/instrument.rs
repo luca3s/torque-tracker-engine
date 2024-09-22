@@ -1,6 +1,8 @@
+use std::array;
+use std::io::Read;
+
 use crate::file::err;
-use crate::file::err::LoadDefects;
-use enumflags2::BitFlags;
+use crate::file::err::LoadDefect;
 
 #[derive(Debug, Default)]
 pub enum NewNoteAction {
@@ -35,7 +37,7 @@ pub enum DuplicateCheckType {
 }
 
 impl TryFrom<u8> for DuplicateCheckType {
-    type Error = u8;
+    type Error = ();
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
@@ -43,7 +45,7 @@ impl TryFrom<u8> for DuplicateCheckType {
             1 => Ok(Self::Note),
             2 => Ok(Self::Sample),
             3 => Ok(Self::Instrument),
-            _ => Err(value),
+            _ => Err(()),
         }
     }
 }
@@ -57,14 +59,14 @@ pub enum DuplicateCheckAction {
 }
 
 impl TryFrom<u8> for DuplicateCheckAction {
-    type Error = u8;
+    type Error = ();
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
             0 => Ok(Self::Cut),
             1 => Ok(Self::NoteOff),
             2 => Ok(Self::NoteFade),
-            _ => Err(value),
+            _ => Err(()),
         }
     }
 }
@@ -81,30 +83,36 @@ pub struct ImpulseInstrument {
     pub global_volume: u8,
     pub default_pan: Option<u8>,
     pub random_volume: u8,
-    pub random_panning: u8,
+    pub random_pan: u8,
     pub created_with: u16,
     pub number_of_samples: u8,
     pub name: String,
     pub initial_filter_cutoff: u8,
     pub initial_filter_resonance: u8,
     pub midi_channel: u8,
-    pub midi_prgram: u8,
+    pub midi_program: u8,
     pub midi_bank: u16,
     pub note_sample_table: [(u8, u8); 120],
-    pub envelopes: [ImpulseEnvelope; 3],
+    pub volume_envelope: ImpulseEnvelope,
+    pub pan_envelope: ImpulseEnvelope,
+    pub pitch_envelope: ImpulseEnvelope,
 }
 
 impl ImpulseInstrument {
+    const SIZE: usize = 554;
+
     /// size in file is 554 bytes
-    pub fn load(buf: &[u8]) -> Result<(Self, BitFlags<err::LoadDefects>), err::LoadErr> {
-        if buf.len() < 547 {
-            return Err(err::LoadErr::BufferTooShort);
-        }
-        if buf[0] != b'I' || buf[1] != b'M' || buf[2] != b'P' || buf[3] != b'I' {
+    pub fn load<R: Read>(reader: &mut R, defect_handler: &mut dyn FnMut(LoadDefect)) -> Result<Self, err::LoadErr> {
+        let buf = {
+            let mut buf = [0; Self::SIZE];
+            reader.read_exact(&mut buf)?;
+            buf
+        };
+
+        if !buf.starts_with(b"IMPI") {
             return Err(err::LoadErr::Invalid);
         }
 
-        let mut defects = BitFlags::empty();
         // unwrap is okay as the slice length is const
         let dos_file_name: [u8; 12] = buf[0x04..=0x0F].try_into().unwrap();
 
@@ -114,21 +122,21 @@ impl ImpulseInstrument {
         let new_note_action = match NewNoteAction::try_from(buf[0x11]) {
             Ok(nna) => nna,
             Err(_) => {
-                defects.insert(LoadDefects::OutOfBoundsValue);
+                defect_handler(LoadDefect::OutOfBoundsValue);
                 NewNoteAction::default()
             }
         };
         let duplicate_check_type = match DuplicateCheckType::try_from(buf[0x12]) {
             Ok(dct) => dct,
             Err(_) => {
-                defects.insert(err::LoadDefects::OutOfBoundsValue);
+                defect_handler(LoadDefect::OutOfBoundsValue);
                 DuplicateCheckType::default()
             }
         };
         let duplicate_check_action = match DuplicateCheckAction::try_from(buf[0x13]) {
             Ok(dca) => dca,
             Err(_) => {
-                defects.insert(err::LoadDefects::OutOfBoundsValue);
+                defect_handler(LoadDefect::OutOfBoundsValue);
                 DuplicateCheckAction::default()
             }
         };
@@ -136,7 +144,7 @@ impl ImpulseInstrument {
         let pitch_pan_seperation = {
             let tmp = i8::from_le_bytes([buf[0x16]]);
             if !(-32..=32).contains(&tmp) {
-                defects.insert(err::LoadDefects::OutOfBoundsValue);
+                defect_handler(LoadDefect::OutOfBoundsValue);
                 0
             } else {
                 tmp
@@ -145,20 +153,20 @@ impl ImpulseInstrument {
         let pitch_pan_center = if buf[0x17] <= 119 {
             buf[0x17]
         } else {
-            defects.insert(err::LoadDefects::OutOfBoundsValue);
+            defect_handler(LoadDefect::OutOfBoundsValue);
             59
         };
         let global_volume = if buf[0x18] <= 128 {
             buf[0x18]
         } else {
-            defects.insert(err::LoadDefects::OutOfBoundsValue);
+            defect_handler(LoadDefect::OutOfBoundsValue);
             64
         };
 
         let default_pan = if buf[0x19] == 128 {
             None
         } else if buf[0x19] > 64 {
-            defects.insert(err::LoadDefects::OutOfBoundsValue);
+            defect_handler(LoadDefect::OutOfBoundsValue);
             Some(32)
         } else {
             Some(buf[0x19])
@@ -169,7 +177,7 @@ impl ImpulseInstrument {
         let random_pan = buf[0x1B];
         assert!(random_pan <= 100);
         let created_with = u16::from_le_bytes([buf[0x1C], buf[0x1D]]);
-        let num_of_samples = buf[0x1E];
+        let number_of_samples = buf[0x1E];
 
         let name = String::from_utf8(
             buf[0x20..=0x39]
@@ -180,7 +188,7 @@ impl ImpulseInstrument {
         )
         .unwrap();
 
-        let inital_filter_cutoff = buf[0x3A];
+        let initial_filter_cutoff = buf[0x3A];
         let initial_filter_resonance = buf[0x3B];
         let midi_channel = buf[0x3C];
         let midi_program = buf[0x3D];
@@ -192,11 +200,36 @@ impl ImpulseInstrument {
             .try_into()
             .unwrap();
 
-        let volume_envelope = ImpulseEnvelope::load(&buf[0x130..0x182])?;
-        let pan_envelope = ImpulseEnvelope::load(&buf[0x182..0x1D4])?;
-        let pitch_envelope = ImpulseEnvelope::load(&buf[0x1D4..])?;
+        let volume_envelope = ImpulseEnvelope::load(&buf[0x130..0x130+ImpulseEnvelope::SIZE].try_into().unwrap());
+        let pan_envelope = ImpulseEnvelope::load(&buf[0x182..0x182+ImpulseEnvelope::SIZE].try_into().unwrap());
+        let pitch_envelope = ImpulseEnvelope::load(&buf[0x1D4..0x1D4+ImpulseEnvelope::SIZE].try_into().unwrap());
 
-        todo!()
+        Ok(Self{
+            dos_file_name,
+            new_note_action,
+            duplicate_check_type,
+            duplicate_check_action,
+            fade_out,
+            pitch_pan_seperation,
+            pitch_pan_center,
+            global_volume,
+            default_pan,
+            random_volume,
+            random_pan,
+            created_with,
+            number_of_samples,
+            name,
+            initial_filter_cutoff,
+            initial_filter_resonance,
+            midi_channel,
+            midi_program,
+            midi_bank,
+            note_sample_table,
+            volume_envelope,
+            pan_envelope,
+            pitch_envelope,
+            
+        })
     }
 }
 
@@ -214,28 +247,23 @@ pub struct ImpulseEnvelope {
 }
 
 impl ImpulseEnvelope {
-    pub fn load(buf: &[u8]) -> Result<Self, err::LoadErr> {
-        if buf.len() < 82 {
-            return Err(err::LoadErr::BufferTooShort);
-        }
+    const SIZE: usize = 81; // = 0x51
 
+    /// doesn't take a reader as it is only used in instrument loading where the whole thing is already loaded
+    fn load(buf: &[u8; Self::SIZE]) -> Self {
         let flags = buf[0];
-        let num_node_points = buf[2];
-        let loop_start = buf[3];
-        let loop_end = buf[4];
-        let sustain_loop_start = buf[5];
-        let sustain_loop_end = buf[6];
+        let num_node_points = buf[1];
+        let loop_start = buf[2];
+        let loop_end = buf[3];
+        let sustain_loop_start = buf[4];
+        let sustain_loop_end = buf[5];
 
-        // chunks_exact leaves remainder of one in this case but the value of that bit isn't being used
-        let nodes: [(u8, u16); 25] = buf[7..]
-            .chunks_exact(3)
-            .take(25)
-            .map(|chunk| (chunk[0], u16::from_le_bytes([chunk[1], chunk[2]])))
-            .collect::<Vec<(u8, u16)>>()
-            .try_into()
-            .unwrap();
+        let nodes = array::from_fn(|idx| {
+            let chunk = 6 + idx * 3;
+            (buf[chunk], u16::from_le_bytes([buf[chunk+1], buf[chunk+2]]))
+        });
 
-        Ok(Self {
+        Self {
             flags,
             num_node_points,
             loop_start,
@@ -243,6 +271,6 @@ impl ImpulseEnvelope {
             sustain_loop_start,
             sustain_loop_end,
             nodes,
-        })
+        }
     }
 }

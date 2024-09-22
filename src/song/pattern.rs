@@ -118,6 +118,10 @@ impl Pattern {
             PatternOperation::RemoveEvent { position: _ } => true,
         }
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
 }
 
 impl Index<u16> for Pattern {

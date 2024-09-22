@@ -13,15 +13,16 @@
 // - what code do i even need?? both types are fully transparent anyway. just look inside
 
 use std::array;
+use std::fmt::Formatter;
 
 use crate::channel::Pan;
+use crate::file::impulse_format;
 use crate::file::impulse_format::header::PatternOrder;
 use crate::sample::{Sample, SampleData, SampleMetaData};
 use crate::song::pattern::Pattern;
 use basedrop::Shared;
 
-use super::note_event::NoteEvent;
-use super::pattern::{InPatternPosition, PatternOperation};
+use super::pattern::PatternOperation;
 
 #[derive(Clone)]
 pub struct Project<const GC: bool> {
@@ -72,6 +73,39 @@ impl<const GC: bool> Song<GC> {
     /// out of bounds is EndOfSong
     pub(crate) fn get_order(&self, order: usize) -> PatternOrder {
         self.pattern_order.get(order).copied().unwrap_or_default()
+    }
+
+    /// takes the values that are included in Song from the header and write them to the song.
+    /// 
+    /// Samples, patterns, instruments are not filled as they need to be loaded from file.
+    pub fn copy_values_from_header(&mut self, header: &impulse_format::header::ImpulseHeader) {
+        self.global_volume = header.global_volume;
+        self.initial_speed = header.initial_speed;
+        self.initial_tempo = header.initial_tempo;
+        self.mix_volume = header.mix_volume;
+        self.pan_separation = header.pan_separation;
+        self.pitch_wheel_depth = header.pitch_wheel_depth;
+        
+        self.pan = header.channel_pan;
+        self.volume = header.channel_volume;
+        
+        for (idx, order) in header.orders.iter().enumerate() {
+            self.pattern_order[idx] = *order;
+        }
+    }
+
+    /// debug like impl which isn't as long by cutting down a lot of information
+    pub fn dbg_relevant(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+        write!(f, "global_volume: {}, ", self.global_volume)?;
+        write!(f, "mix_volume: {}, ", self.mix_volume)?;
+        write!(f, "initial_speed: {}, ", self.initial_speed)?;
+        write!(f, "initial_tempo: {}, ", self.initial_tempo)?;
+        write!(f, "pan_seperation: {}, ", self.pan_separation)?;
+        write!(f, "pitch_wheel_depth: {}, ", self.pitch_wheel_depth)?;
+        write!(f, "{} not empty patterns, ", self.patterns.iter().filter(|p| !p.is_empty()).count())?;
+        write!(f, "{} orders, ", self.pattern_order.iter().filter(|o| **o != PatternOrder::EndOfSong).count())?;
+        write!(f, "{} samples", self.samples.iter().flatten().count())?;
+        Ok(())
     }
 }
 

@@ -1,41 +1,44 @@
-use crate::file::err::LoadDefects;
+use crate::file::err::LoadDefect;
 use crate::file::err;
 use crate::song::event_command::NoteCommand;
 use crate::song::note_event::{Note, NoteEvent, VolumeEffect};
 use crate::song::pattern::{InPatternPosition, Pattern};
-use enumflags2::BitFlags;
 
-pub fn load_pattern(buf: &[u8]) -> Result<(Pattern, BitFlags<LoadDefects>), err::LoadErr> {
+/// reader should be buffered in some way and not do a syscall on every read call.
+/// 
+/// This function does a lot of read calls
+pub fn load_pattern<R: std::io::Read + std::io::Seek>(reader: &mut R, defect_handler: &mut dyn FnMut(LoadDefect)) -> Result<Pattern, err::LoadErr> {
     const PATTERN_HEADER_SIZE: usize = 8;
 
-    if buf.len() < PATTERN_HEADER_SIZE {
-        return Err(err::LoadErr::BufferTooShort);
-    }
-    let length = usize::from(u16::from_le_bytes([buf[0], buf[1]])) + PATTERN_HEADER_SIZE;
-    if buf.len() < length {
-        return Err(err::LoadErr::BufferTooShort);
-    }
+    let read_start = reader.stream_position()?;
+
+    let (length, num_rows) = {
+        let mut header = [0; PATTERN_HEADER_SIZE];
+        reader.read_exact(&mut header)?;
+        (u64::from(u16::from_le_bytes([header[0], header[1]])) + PATTERN_HEADER_SIZE as u64, u16::from_le_bytes([header[2], header[3]]))
+    };
+
     // a guarantee given by the impulse tracker "specs"
     if length >= 64_000 {
         return Err(err::LoadErr::Invalid);
     }
-    let num_rows_header = u16::from_le_bytes([buf[2], buf[3]]);
-    if !(32..=200).contains(&num_rows_header) {
+
+    if !(32..=200).contains(&num_rows) {
         return Err(err::LoadErr::Invalid);
     }
 
-    let mut pattern = Pattern::new(num_rows_header);
+    let mut pattern = Pattern::new(num_rows);
 
-    let mut read_pointer: usize = PATTERN_HEADER_SIZE;
     let mut row_num: u16 = 0;
-    let mut defects = BitFlags::empty();
 
     let mut last_mask = [0; 64];
     let mut last_event = [NoteEvent::default(); 64];
 
-    while row_num < num_rows_header && read_pointer < length {
-        let channel_variable = *buf.get(read_pointer).ok_or(err::LoadErr::BufferTooShort)?;
-        read_pointer += 1;
+    let mut scratch = [0; 1];
+
+    while row_num < num_rows && reader.stream_position()? - read_start < length {
+        
+        let channel_variable = scratch[0];
 
         if channel_variable == 0 {
             row_num += 1;
@@ -46,9 +49,9 @@ pub fn load_pattern(buf: &[u8]) -> Result<(Pattern, BitFlags<LoadDefects>), err:
         let channel_id = usize::from(channel);
 
         let maskvar = if (channel_variable & 0b10000000) != 0 {
-            let val = *buf.get(read_pointer).ok_or(err::LoadErr::BufferTooShort)?;
+            reader.read_exact(&mut scratch)?;
+            let val = scratch[0];
             last_mask[channel_id] = val;
-            read_pointer += 1;
             val
         } else {
             last_mask[channel_id]
@@ -58,12 +61,14 @@ pub fn load_pattern(buf: &[u8]) -> Result<(Pattern, BitFlags<LoadDefects>), err:
 
         // Note
         if (maskvar & 0b00000001) != 0 {
-            let note = Note::new(*buf.get(read_pointer).ok_or(err::LoadErr::BufferTooShort)?);
-            if note.is_err() {
-                defects.insert(LoadDefects::OutOfBoundsValue);
-            }
-            let note = note.unwrap_or_default();
-            read_pointer += 1;
+            reader.read_exact(&mut scratch)?;
+            let note = match Note::new(scratch[0]) {
+                Ok(n) => n,
+                Err(_) => {
+                    defect_handler(LoadDefect::OutOfBoundsValue);
+                    Note::default()
+                },
+            };
 
             event.note = note;
             last_event[channel_id].note = note;
@@ -71,8 +76,8 @@ pub fn load_pattern(buf: &[u8]) -> Result<(Pattern, BitFlags<LoadDefects>), err:
 
         // Instrument / Sample
         if (maskvar & 0b00000010) != 0 {
-            let instrument = *buf.get(read_pointer).ok_or(err::LoadErr::BufferTooShort)?;
-            read_pointer += 1;
+            reader.read_exact(&mut scratch)?;
+            let instrument = scratch[0];
 
             event.sample_instr = instrument;
             last_event[channel_id].sample_instr = instrument;
@@ -80,12 +85,12 @@ pub fn load_pattern(buf: &[u8]) -> Result<(Pattern, BitFlags<LoadDefects>), err:
 
         // Volume
         if (maskvar & 0b00000100) != 0 {
-            let vol_pan_raw = *buf.get(read_pointer).ok_or(err::LoadErr::BufferTooShort)?;
-            read_pointer += 1;
+            reader.read_exact(&mut scratch)?;
+            let vol_pan_raw = scratch[0];
             let vol_pan = match vol_pan_raw.try_into() {
                 Ok(v) => v,
                 Err(_) => {
-                    defects.insert(LoadDefects::OutOfBoundsValue);
+                    defect_handler(LoadDefect::OutOfBoundsValue);
                     VolumeEffect::default()
                 }
             };
@@ -96,20 +101,20 @@ pub fn load_pattern(buf: &[u8]) -> Result<(Pattern, BitFlags<LoadDefects>), err:
 
         // Effect
         if (maskvar & 0b00001000) != 0 {
-            let command = *buf.get(read_pointer).ok_or(err::LoadErr::BufferTooShort)?;
-            read_pointer += 1;
-            let cmd_val = *buf.get(read_pointer).ok_or(err::LoadErr::BufferTooShort)?;
-            read_pointer += 1;
+            reader.read_exact(&mut scratch)?;
+            let command = scratch[0];
+            reader.read_exact(&mut scratch)?;
+            let cmd_val = scratch[0];
 
             let cmd = match NoteCommand::try_from((command, cmd_val)) {
                 Ok(cmd) => cmd,
                 Err(_) => {
-                    defects.insert(LoadDefects::UnknownEffect);
+                    defect_handler(LoadDefect::OutOfBoundsValue);
                     NoteCommand::default()
                 }
             };
-            last_event[channel_id].command = cmd;
 
+            last_event[channel_id].command = cmd;
             event.command = cmd;
         }
 
@@ -143,32 +148,8 @@ pub fn load_pattern(buf: &[u8]) -> Result<(Pattern, BitFlags<LoadDefects>), err:
     }
 
     if pattern.row_count() == row_num {
-        Ok((pattern, defects))
+        Ok(pattern)
     } else {
         Err(err::LoadErr::BufferTooShort)
     }
 }
-
-// pub fn load_pattern_new(buf: &[u8]) -> Result<(Pattern, BitFlags<LoadDefects>), err::LoadErr> {
-//     const PATTERN_HEADER_SIZE: usize = 8;
-
-//     if buf.len() >= 64_000 {
-//         return Err(err::LoadErr::Invalid);
-//     }
-
-//     let mut reader = FileReader::new(buf);
-//     reader.require_remaining(PATTERN_HEADER_SIZE)?;
-
-//     let lenght = usize::from(reader.get_u16()?) + PATTERN_HEADER_SIZE;
-//     reader.require_overall(lenght)?;
-
-//     let num_rows_header = reader.get_u16()?;
-//     if !(32..=200).contains(&num_rows_header) {
-//         return Err(err::LoadErr::Invalid);
-//     }
-
-//     let mut pattern = Pattern::new(num_rows_header);
-
-//     let mut row_num = 0;
-//     todo!()
-// }
