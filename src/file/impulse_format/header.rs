@@ -3,7 +3,7 @@ use std::{io::Read, num::NonZeroU32};
 
 use crate::channel::Pan;
 
-use super::InFilePtr;
+use crate::file::InFilePtr;
 
 /// maybe completely wrong
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
