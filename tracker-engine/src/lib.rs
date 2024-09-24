@@ -63,7 +63,7 @@ mod tests {
         std::thread::sleep(Duration::from_secs(3));
         manager.play_note(note_event);
         std::thread::sleep(Duration::from_secs(3));
-        while let Ok(event) = recv.try_next() {
+        while let Ok(event) = recv.pop() {
             println!("{event:?}");
         }
     }

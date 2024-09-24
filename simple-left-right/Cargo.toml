@@ -3,12 +3,13 @@ name = "simple-left-right"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.82"
+readme = "README.md"
 authors = ["Lucas Baumann"]
 keywords = ["real-time", "lock-free", "data-structures", "read-write", "concurrency"]
 categories = ["concurrency"]
 license = "MIT OR APACHE-2.0"
 repository = "https://github.com/luca3s/tracker-engine"
-desciption = "Lockfree, realtime safe and copy-free Synchronisation"
+description = "Lockfree, realtime safe and copy-free Synchronisation"
 workspace = "../"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

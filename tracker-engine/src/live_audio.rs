@@ -18,7 +18,7 @@ pub(crate) struct LiveAudio {
     live_note: Option<SamplePlayer<'static, true>>,
     manager: Receiver<ToWorkerMsg>,
     audio_msg_config: AudioMsgConfig,
-    to_app: futures::channel::mpsc::Sender<FromWorkerMsg>,
+    to_app: rtrb::Producer<FromWorkerMsg>,
     config: OutputConfig,
     buffer: Box<[Frame]>,
 }
@@ -30,7 +30,7 @@ impl LiveAudio {
         song: Reader<Song<true>>,
         manager: Receiver<ToWorkerMsg>,
         audio_msg_config: AudioMsgConfig,
-        to_app: futures::channel::mpsc::Sender<FromWorkerMsg>,
+        to_app: rtrb::Producer<FromWorkerMsg>,
         config: OutputConfig,
     ) -> Self {
         Self {
@@ -98,7 +98,7 @@ impl LiveAudio {
                 .for_each(|(buf, frame)| buf.add_assign(frame));
 
             if self.audio_msg_config.playback_position && position != playback.get_position() {
-                let _ = self.to_app.try_send(FromWorkerMsg::CurrentPlaybackPosition(playback.get_position()));
+                let _ = self.to_app.push(FromWorkerMsg::CurrentPlaybackPosition(playback.get_position()));
             }
         }
 
@@ -162,7 +162,7 @@ impl LiveAudio {
             if self.audio_msg_config.buffer_finished {
                 let _ = self
                     .to_app
-                    .try_send(FromWorkerMsg::BufferFinished(info.timestamp()));
+                    .push(FromWorkerMsg::BufferFinished(info.timestamp()));
             }
         }
     }

@@ -70,8 +70,8 @@ impl AudioManager {
         config: OutputConfig,
         audio_msg_config: AudioMsgConfig,
         msg_buffer_size: usize,
-    ) -> Result<futures::channel::mpsc::Receiver<FromWorkerMsg>, cpal::BuildStreamError> {
-        let from_worker = futures::channel::mpsc::channel(msg_buffer_size);
+    ) -> Result<rtrb::Consumer<FromWorkerMsg>, cpal::BuildStreamError> {
+        let from_worker = rtrb::RingBuffer::new(msg_buffer_size);
         let to_worker = std::sync::mpsc::channel();
         let reader = self.song.build_reader().unwrap();
 
