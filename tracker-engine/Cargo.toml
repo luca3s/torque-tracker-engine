@@ -1,0 +1,20 @@
+[package]
+name = "impulse-engine"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+license = "GPL-2.0-only" # take a look again
+[dependencies]
+basedrop = "0.1.2" # miri reports Race Condition. Wait for fix or pull inside
+cpal = "0.15.3"
+futures = { version="0.3.30", default-features = false, features = ["std"]}
+# used for the Select API on channels, which is really useful
+#flume = {  version = "0.11.0", default-features = false, features = ["select"]}
+simple-left-right = { path = "../simple-left-right" }
+# assert_no_alloc
+
+[dev-dependencies]
+hound = "3.5.1"
+
+[lints.clippy]
+elided_lifetimes_in_paths = "warn"

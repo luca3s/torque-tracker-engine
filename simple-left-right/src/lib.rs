@@ -1,18 +1,33 @@
+//! Simpler version of the left-right from Jon Gjengset library.
+//!
+//! Uses two copies of the value to allow doing small changes, while still allowing non-blocking reading.
+//! Writing can block, while reading doesn't.
+
 #![warn(
+    clippy::cargo,
     clippy::all,
-    clippy::pedantic,
     clippy::perf,
     clippy::style,
     clippy::complexity,
     clippy::suspicious,
-    clippy::correctness
+    clippy::correctness,
+    missing_docs,
+    missing_copy_implementations,
+    missing_debug_implementations,
+    clippy::absolute_paths
+)]
+#![deny(
+    unsafe_op_in_unsafe_fn,
+    clippy::missing_safety_doc,
+    clippy::undocumented_unsafe_blocks
 )]
 
 use std::{
-    borrow::Borrow,
     cell::UnsafeCell,
     collections::VecDeque,
+    hint::assert_unchecked,
     marker::PhantomData,
+    mem::MaybeUninit,
     ops::Deref,
     sync::{
         atomic::{fence, AtomicU8, Ordering},
@@ -24,6 +39,7 @@ mod inner;
 
 use inner::{Ptr, ReadState, Shared};
 
+/// Should be implemented on structs that want to be shared with this library
 pub trait Absorb<O> {
     /// has to be deterministic. Operations will be applied in the same order to both buffers
     fn absorb(&mut self, operation: O);
@@ -72,12 +88,13 @@ impl<T> Drop for ReadGuard<'_, T> {
 ///
 /// Reader will be able to read data even if Writer has been dropped. Obviously that data won't change anymore
 /// When there is no Reader the Writer is able to create a new one. The other way around doesn't work
+#[derive(Debug)]
 pub struct Reader<T> {
     inner: Arc<Shared<T>>,
 }
 
 impl<T> Reader<T> {
-    /// this function never blocks. (fetch_update loop doesn't count)
+    /// this function never blocks. (`fetch_update` loop doesn't count)
     pub fn lock(&mut self) -> ReadGuard<'_, T> {
         // sets the corresponding read bit to the write ptr bit
         // happens as a single atomic operation so the 'double read' state isn't needed
@@ -88,7 +105,7 @@ impl<T> Reader<T> {
                 .fetch_update(Ordering::Relaxed, Ordering::Acquire, |value| {
                     // SAFETY: At this point no Read bit is set, as creating a ReadGuard requires a &mut Reader and the Guard holds the &mut Reader
                     unsafe {
-                        std::hint::assert_unchecked(value & 0b011 == 0);
+                        assert_unchecked(value & 0b011 == 0);
                     }
                     match value.into() {
                         Ptr::Value1 => Some(0b001),
@@ -115,8 +132,9 @@ impl<T> Reader<T> {
 /// Can be used to write to the Data structure.
 ///
 /// When this structure exists the Reader already switched to the other value
-/// 
+///
 /// Dropping this makes all changes available to the Reader
+#[derive(Debug)]
 pub struct WriteGuard<'a, T, O> {
     writer: &'a mut Writer<T, O>,
 }
@@ -126,6 +144,7 @@ impl<T, O> WriteGuard<'_, T, O> {
     pub fn swap(self) {}
 
     /// Gets the value currently being written to.
+    #[must_use]
     pub fn read(&self) -> &T {
         self.writer.read()
     }
@@ -144,12 +163,12 @@ impl<T, O> WriteGuard<'_, T, O> {
 }
 
 impl<'a, T: Absorb<O>, O> WriteGuard<'a, T, O> {
-    /// created a new WriteGuard and syncs the two values if needed.
+    /// created a new `WriteGuard` and syncs the two values if needed.
     ///
     /// ### SAFETY
-    /// No ReadGuard is allowed to exist to the same value as Writer.write_ptr points to
-    /// 
-    /// Assuming a correct Reader & ReadGuard implementation:
+    /// No `ReadGuard` is allowed to exist to the same value the `Writer.write_ptr` points to
+    ///
+    /// Assuming a correct `Reader` & `ReadGuard` implementation:
     /// If Inner.read_state.can_write(Writer.write_ptr) == true this function is fine to call
     unsafe fn new(writer: &'a mut Writer<T, O>) -> Self {
         let mut guard = Self { writer };
@@ -180,6 +199,8 @@ impl<T, O> Drop for WriteGuard<'_, T, O> {
     }
 }
 
+/// Not realtime safe Object which can change the internal T value
+#[derive(Debug)]
 pub struct Writer<T, O> {
     shared: Arc<Shared<T>>,
     // sets which buffer the next write is applied to
@@ -191,7 +212,7 @@ pub struct Writer<T, O> {
 
 impl<T, O> Writer<T, O> {
     /// swaps the read and write values. If no changes were made since the last swap nothing happens. Never blocks
-    /// not public as swapping without creating a WriteGuard is pretty
+    /// not public as swapping without creating a `WriteGuard` is pretty
     fn swap(&mut self) {
         if self.op_buffer.is_empty() {
             return;
@@ -216,7 +237,9 @@ impl<T, O> Writer<T, O> {
         }
     }
 
-    // Gets the value that will be written to next
+    /// The Value returned may be newer than the version the reader is currently seeing.
+    /// This value will be written to next.
+    #[must_use]
     pub fn read(&self) -> &T {
         // SAFETY: Only the WriteGuard can write to the values / create mut refs to them.
         // The WriteGuard holds a mut ref to the writer so this function can't be called while a writeguard exists
@@ -226,7 +249,7 @@ impl<T, O> Writer<T, O> {
                 .get_value(self.write_ptr)
                 .get()
                 .as_ref()
-                .unwrap()
+                .unwrap_unchecked()
         }
     }
 }
@@ -271,21 +294,27 @@ impl<T: Absorb<O>, O> Writer<T, O> {
 }
 
 impl<T: Clone, O> Writer<T, O> {
+    /// Creates a new Writer by cloning the value once to get two values
     pub fn new(value: T) -> Self {
-        let mut shared: Arc<std::mem::MaybeUninit<Shared<T>>> = Arc::new_uninit();
-        let shared_ptr: *mut Shared<T> =
-            unsafe { Arc::get_mut(&mut shared).unwrap_unchecked() }.as_mut_ptr();
+        let mut shared: Arc<MaybeUninit<Shared<T>>> = Arc::new_uninit();
 
+        // SAFETY: Arc was just created
+        let shared_ptr = unsafe { Arc::get_mut(&mut shared).unwrap_unchecked() }.as_mut_ptr();
+
+        // SAFETY: doesn't really deref the ptr, uses raw ref to get another pointer
         let state_ptr: *mut AtomicU8 = unsafe { &raw mut (*shared_ptr).state };
+        // SAFETY: Ptr is valid, Arc allocated it
         unsafe { state_ptr.write(AtomicU8::new(0b000)) };
 
+        // SAFETY: doesn't really deref the ptr, uses raw ref to get another pointer
         let value_1_ptr: *mut UnsafeCell<T> = unsafe { &raw mut (*shared_ptr).value_1 };
         // SAFETY: UnsafeCell<T> has the same memory Layout as T
-        unsafe { (value_1_ptr as *mut T).write(value.clone()) };
+        unsafe { value_1_ptr.cast::<T>().write(value.clone()) };
 
+        // SAFETY: doesn't really deref the ptr, uses raw ref to get another pointer
         let value_2_ptr: *mut UnsafeCell<T> = unsafe { &raw mut (*shared_ptr).value_2 };
         // SAFETY: UnsafeCell<T> has the same memory Layout as T
-        unsafe { (value_2_ptr as *mut T).write(value) };
+        unsafe { value_2_ptr.cast::<T>().write(value) };
 
         // SAFETY: all fields of shared were initialized
         let shared: Arc<Shared<T>> = unsafe { shared.assume_init() };
@@ -298,22 +327,29 @@ impl<T: Clone, O> Writer<T, O> {
 }
 
 impl<T: Default, O> Default for Writer<T, O> {
-    /// Default impl of T needs to give the same result every time
+    /// Creates a new Writer by calling `T::default()` twice to create the two values
+    ///
+    /// Default impl of T needs to give the same result every time. Doesn't lead to UB, but turns the library basically useless
     fn default() -> Self {
-        let mut shared: Arc<std::mem::MaybeUninit<Shared<T>>> = Arc::new_uninit();
-        let shared_ptr: *mut Shared<T> =
-            unsafe { Arc::get_mut(&mut shared).unwrap_unchecked() }.as_mut_ptr();
+        let mut shared: Arc<MaybeUninit<Shared<T>>> = Arc::new_uninit();
 
+        // SAFETY: Arc was just created
+        let shared_ptr = unsafe { Arc::get_mut(&mut shared).unwrap_unchecked() }.as_mut_ptr();
+
+        // SAFETY: doesn't really deref the ptr, uses raw ref to get another pointer
         let state_ptr: *mut AtomicU8 = unsafe { &raw mut (*shared_ptr).state };
+        // SAFETY: Ptr is valid, Arc allocated it
         unsafe { state_ptr.write(AtomicU8::new(0b000)) };
 
+        // SAFETY: doesn't really deref the ptr, uses raw ref to get another pointer
         let value_1_ptr: *mut UnsafeCell<T> = unsafe { &raw mut (*shared_ptr).value_1 };
         // SAFETY: UnsafeCell<T> has the same memory Layout as T
-        unsafe { (value_1_ptr as *mut T).write(T::default()) };
+        unsafe { value_1_ptr.cast::<T>().write(T::default()) };
 
+        // SAFETY: doesn't really deref the ptr, uses raw ref to get another pointer
         let value_2_ptr: *mut UnsafeCell<T> = unsafe { &raw mut (*shared_ptr).value_2 };
         // SAFETY: UnsafeCell<T> has the same memory Layout as T
-        unsafe { (value_2_ptr as *mut T).write(T::default()) };
+        unsafe { value_2_ptr.cast::<T>().write(T::default()) };
 
         // SAFETY: all fields of shared were initialized
         let shared: Arc<Shared<T>> = unsafe { shared.assume_init() };

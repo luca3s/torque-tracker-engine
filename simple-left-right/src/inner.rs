@@ -22,6 +22,7 @@ impl From<u8> for Ptr {
         match value & 0b100 {
             0b000 => Self::Value1,
             0b100 => Self::Value2,
+            // SAFETY: Internal Library Value only.
             _ => unsafe { unreachable_unchecked() },
         }
     }
@@ -63,11 +64,13 @@ impl From<u8> for ReadState {
             0b01 => Self::Value(Ptr::Value1),
             0b10 => Self::Value(Ptr::Value2),
             0b11 => Self::Both,
+            // SAFETY: Internal Library Value only.
             _ => unsafe { unreachable_unchecked() },
         }
     }
 }
 
+#[derive(Debug)]
 pub struct Shared<T> {
     pub value_1: UnsafeCell<T>,
     pub value_2: UnsafeCell<T>,
@@ -77,7 +80,10 @@ pub struct Shared<T> {
     pub state: AtomicU8,
 }
 
+/// SAFETY: Shared not public. Reader and Writer make it safe to use. Same restrictions as RwLock, which allows similar access
 unsafe impl<T: Send> Send for Shared<T> {}
+
+/// SAFETY: Shared not public. Reader and Writer make it safe to use. Same restrictions as RwLock, which allows similar access
 unsafe impl<T: Send + Sync> Sync for Shared<T> {}
 
 impl<T> Shared<T> {
