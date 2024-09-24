@@ -71,8 +71,8 @@ impl From<u8> for ReadState {
 pub struct Shared<T> {
     pub value_1: UnsafeCell<T>,
     pub value_2: UnsafeCell<T>,
-    /// bit 0: is value 1 being read?
-    /// bit 1: is value 2 being read?
+    /// bit 0: is value 1 being read
+    /// bit 1: is value 2 being read
     /// bit 3: which value should be read next (0: value 1, 1: value 2)
     pub state: AtomicU8,
 }

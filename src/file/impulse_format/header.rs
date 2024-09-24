@@ -69,7 +69,7 @@ impl ImpulseHeader {
     /// Header is stored at the beginning of the File. length isn't constant, but at least 192 bytes
     /// when unable to load specific parts the function tries its best and communicates the failures in the BitFlags return value.
     /// For some problems it wouldn't make sense to return an incomplete Header as so much would be missing. In those cases an Err is returned
-    pub fn load<R: Read>(reader: &mut R, defect_handler: &mut dyn FnMut(LoadDefect)) -> Result<Self, err::LoadErr> {
+    pub fn parse<R: Read, H: FnMut(LoadDefect)>(reader: &mut R, defect_handler: &mut H) -> Result<Self, err::LoadErr> {
         let base = {
             let mut base = [0; Self::BASE_SIZE];
             reader.read_exact(&mut base)?;

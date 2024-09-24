@@ -102,7 +102,7 @@ impl ImpulseInstrument {
     const SIZE: usize = 554;
 
     /// size in file is 554 bytes
-    pub fn load<R: Read>(reader: &mut R, defect_handler: &mut dyn FnMut(LoadDefect)) -> Result<Self, err::LoadErr> {
+    pub fn parse<R: Read, H: FnMut(LoadDefect)>(reader: &mut R, defect_handler: &mut H) -> Result<Self, err::LoadErr> {
         let buf = {
             let mut buf = [0; Self::SIZE];
             reader.read_exact(&mut buf)?;

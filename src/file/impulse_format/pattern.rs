@@ -7,7 +7,7 @@ use crate::song::pattern::{InPatternPosition, Pattern};
 /// reader should be buffered in some way and not do a syscall on every read call.
 /// 
 /// This function does a lot of read calls
-pub fn load_pattern<R: std::io::Read + std::io::Seek>(reader: &mut R, defect_handler: &mut dyn FnMut(LoadDefect)) -> Result<Pattern, err::LoadErr> {
+pub fn parse_pattern<R: std::io::Read + std::io::Seek, H: FnMut(LoadDefect)>(reader: &mut R, defect_handler: &mut H) -> Result<Pattern, err::LoadErr> {
     const PATTERN_HEADER_SIZE: usize = 8;
 
     let read_start = reader.stream_position()?;

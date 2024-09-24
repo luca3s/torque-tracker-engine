@@ -11,7 +11,7 @@ mod tests {
         let (send, rcv) = std::sync::mpsc::channel::<Writer<i32, CounterAddOp>>();
         std::thread::spawn(move || {
             let writer = rcv.recv().unwrap();
-            assert_eq!(*writer, 1);
+            assert_eq!(*writer.read(), 1);
         });
         writer.try_lock().unwrap().apply_op(CounterAddOp(1));
         send.send(writer).unwrap();
@@ -23,15 +23,15 @@ mod tests {
         let mut reader = writer.build_reader().unwrap();
         assert_eq!(*reader.lock(), 0);
         let mut write_lock = writer.lock();
-        assert_eq!(*write_lock, 0);
+        assert_eq!(*write_lock.read(), 0);
         write_lock.apply_op(CounterAddOp(2));
-        assert_eq!(*write_lock, 2);
-        // drop(write_lock);
+        assert_eq!(*write_lock.read(), 2);
+        drop(write_lock);
         let write_lock = writer.lock();
-        assert_eq!(*write_lock, 2);
+        assert_eq!(*write_lock.read(), 2);
         write_lock.swap();
         assert_eq!(*reader.lock(), 2);
-        assert_eq!(*writer.lock(), 2);
+        assert_eq!(*writer.lock().read(), 2);
     }
 
     #[test]
@@ -39,17 +39,18 @@ mod tests {
         let mut writer = Writer::new(0);
         let mut lock = writer.try_lock().unwrap();
         lock.apply_op(CounterAddOp(1));
-        assert_eq!(*lock, 1);
-        assert_eq!(*writer.try_lock().unwrap(), 1);
+        assert_eq!(*lock.read(), 1);
+        std::mem::drop(lock);
+        assert_eq!(*writer.try_lock().unwrap().read(), 1);
     }
 
     #[test]
     fn writer_as_ref() {
         let mut writer = Writer::new(0);
-        assert_eq!(*writer, 0);
+        assert_eq!(*writer.read(), 0);
 
         writer.try_lock().unwrap().apply_op(CounterAddOp(3));
-        assert_eq!(*writer, 3);
+        assert_eq!(*writer.read(), 3);
     }
 
     #[test]
@@ -103,7 +104,7 @@ mod tests {
         writer.lock().swap();
         // blocks until the spawned thread drops the read_lock
         let write_lock = writer.lock();
-        assert_eq!(*write_lock, 2);
+        assert_eq!(*write_lock.read(), 2);
     }
 
     #[test]
@@ -162,6 +163,6 @@ mod tests {
         let mut reader = writer.build_reader().unwrap();
         // read both of the values and with locking also access the Atomic
         assert_eq!(*reader.lock(), i32::default());
-        assert_eq!(*writer, i32::default());
+        assert_eq!(*writer.read(), i32::default());
     }
 }

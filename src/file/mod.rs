@@ -16,16 +16,19 @@ impl InFilePtr {
     }
 }
 
+/// Default parsing of a song. Should be fine for most usecases. If you want more customization use the different parsing functions directly.
+/// 
 /// R should be buffered in some way and not do a syscall on every read.
-pub fn load_song<R: std::io::Read + std::io::Seek>(reader: &mut R, defect_handler: &mut dyn FnMut(LoadDefect)) -> Result<Song<false>, LoadErr> {
-    let header = header::ImpulseHeader::load(reader, defect_handler)?;
+/// If you ever find yourself using multiple different reader and/or handlers please open an issue on Github, i will change this to take &dyn.
+pub fn parse_song<R: std::io::Read + std::io::Seek, H: FnMut(LoadDefect)>(reader: &mut R, defect_handler: &mut H) -> Result<Song<false>, LoadErr> {
+    let header = header::ImpulseHeader::parse(reader, defect_handler)?;
     let mut song = Song::default();
     song.copy_values_from_header(&header);
 
-    // load patterns
+    // parse patterns
     for (idx, ptr) in header.pattern_offsets.iter().enumerate().flat_map(|(idx, ptr)| ptr.map(|ptr| (idx, ptr))) {
         ptr.seek_to_pos(reader)?;
-        let pattern = pattern::load_pattern(reader, defect_handler)?;
+        let pattern = pattern::parse_pattern(reader, defect_handler)?;
         song.patterns[idx] = pattern;
     }
 

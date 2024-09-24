@@ -37,6 +37,7 @@ impl Error for LoadErr {}
 /// 
 /// load was partially successful. These are the defects that are in the now loaded project
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub enum LoadDefect {
     /// deletes the effect
     UnknownEffect,

@@ -10,8 +10,7 @@ use crate::{
     live_audio::{AudioMsgConfig, FromWorkerMsg, LiveAudio, PlaybackSettings, ToWorkerMsg},
     sample::{SampleData, SampleMetaData},
     song::{
-        note_event::NoteEvent,
-        pattern::{InPatternPosition, Pattern, PatternOperation},
+        pattern::PatternOperation,
         song::{Song, SongOperation},
     },
 };
@@ -42,16 +41,18 @@ impl AudioManager {
         cpal::default_host().default_output_device()
     }
 
-    /// may block
+    /// may block.
+    /// 
+    /// Spinloops until no more ReadGuard to the old value exists
     pub fn edit_song(&mut self) -> SongEdit {
         SongEdit {
-            song: std::mem::ManuallyDrop::new(self.song.lock()),
+            song: self.song.lock(),
             gc_handle: self.gc.handle(),
         }
     }
 
     pub fn get_song(&self) -> &Song<true> {
-        &self.song
+        self.song.read()
     }
 
     pub fn collect_garbage(&mut self) {
@@ -145,12 +146,13 @@ impl Drop for AudioManager {
 
 /// the changes made to the song will be made available to the playing live audio as soon as
 /// this struct is dropped.
+/// 
 /// With this you can load the full song without ever playing a half initialised state
 /// when doing mulitple operations this object should be kept as it is
 // should do all the verfication of
 // need manuallyDrop because i need consume on drop behaviour
 pub struct SongEdit<'a> {
-    song: ManuallyDrop<WriteGuard<'a, Song<true>, SongOperation>>,
+    song: WriteGuard<'a, Song<true>, SongOperation>,
     gc_handle: Handle,
 }
 
@@ -175,7 +177,7 @@ impl SongEdit<'_> {
 
     pub fn pattern_operation(&mut self, pattern: usize, op: PatternOperation) {
         assert!(pattern < Song::<false>::MAX_PATTERNS);
-        assert!(self.song.patterns[pattern].operation_is_valid(&op));
+        assert!(self.song.read().patterns[pattern].operation_is_valid(&op));
         self.song.apply_op(SongOperation::PatternOperation(pattern, op));
     }
 
@@ -186,20 +188,11 @@ impl SongEdit<'_> {
     }
 
     pub fn song(&self) -> &Song<true> {
-        &self.song
+        self.song.read()
     }
 
     /// Finish the changes and publish them to the live playing song
     pub fn finish(self) {}
-}
-
-impl Drop for SongEdit<'_> {
-    fn drop(&mut self) {
-        // SAFETY:
-        // the ManuallyDrop isn't used after this as this is the drop function
-        // can't use into_inner, as i only have &mut not owned
-        unsafe { ManuallyDrop::take(&mut self.song) }.swap()
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
