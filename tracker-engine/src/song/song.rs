@@ -13,7 +13,8 @@
 // - what code do i even need?? both types are fully transparent anyway. just look inside
 
 use std::array;
-use std::fmt::Formatter;
+use std::fmt::{Debug, Formatter};
+use std::ops::Deref;
 
 use crate::channel::Pan;
 use crate::file::impulse_format;
@@ -77,7 +78,8 @@ impl<const GC: bool> Song<GC> {
 
     /// takes the values that are included in Song from the header and write them to the song.
     /// 
-    /// Samples, patterns, instruments are not filled as they need to be loaded from file.
+    /// Mostly applies to metadata about the song.
+    /// Samples, patterns, instruments are not filled as they are not included in the header
     pub fn copy_values_from_header(&mut self, header: &impulse_format::header::ImpulseHeader) {
         self.global_volume = header.global_volume;
         self.initial_speed = header.initial_speed;
@@ -85,10 +87,10 @@ impl<const GC: bool> Song<GC> {
         self.mix_volume = header.mix_volume;
         self.pan_separation = header.pan_separation;
         self.pitch_wheel_depth = header.pitch_wheel_depth;
-        
+
         self.pan = header.channel_pan;
         self.volume = header.channel_volume;
-        
+
         for (idx, order) in header.orders.iter().enumerate() {
             self.pattern_order[idx] = *order;
         }
@@ -106,12 +108,6 @@ impl<const GC: bool> Song<GC> {
         write!(f, "{} orders, ", self.pattern_order.iter().filter(|o| **o != PatternOrder::EndOfSong).count())?;
         write!(f, "{} samples", self.samples.iter().flatten().count())?;
         Ok(())
-    }
-}
-
-impl From<Song<true>> for Song<false> {
-    fn from(value: Song<true>) -> Self {
-        value.to_owned()
     }
 }
 
@@ -135,6 +131,12 @@ impl Song<false> {
     }
 }
 
+impl From<Song<true>> for Song<false> {
+    fn from(value: Song<true>) -> Self {
+        value.to_owned()
+    }
+}
+
 impl Song<true> {
     pub fn to_owned(self) -> Song<false> {
         Song {
@@ -151,6 +153,25 @@ impl Song<true> {
             samples: self
                 .samples
                 .map(|option| option.map(|(meta, data)| (meta, data.to_owned()))),
+        }
+    }
+
+    pub(crate) fn validate_operation(&self, op: SongOperation, handle: &basedrop::Handle) -> Result<ValidOperation, SongOperation> {
+        let valid = match op {
+            SongOperation::SetVolume(c, _) => c < Self::MAX_CHANNELS,
+            SongOperation::SetPan(c, _) => c < Self::MAX_CHANNELS,
+            SongOperation::SetSample(idx, _, _) => idx < Self::MAX_SAMPLES,
+            SongOperation::PatternOperation(idx, op) => match self.patterns.get(idx) {
+                Some(pattern) => pattern.operation_is_valid(&op),
+                None => false,
+            },
+            SongOperation::SetOrder(idx, _) => idx < Self::MAX_ORDERS,
+        };
+
+        if valid {
+            Ok(ValidOperation::new(op, handle))
+        } else {
+            Err(op)
         }
     }
 }
@@ -173,11 +194,19 @@ impl<const GC: bool> Default for Song<GC> {
     }
 }
 
-/// Songoperation only represents valid operations. It needs to be checked for validity when creating.
-/// this provides better API as wrong inputs can immediately be returned as errors.
-/// it is also more efficient as each operation is applied twice, so checking before is less work than checking when applying
+// On change: also change ValidOperation
+#[derive(Clone, Debug)]
+pub enum SongOperation {
+    SetVolume(usize, u8),
+    SetPan(usize, Pan),
+    SetSample(usize, SampleMetaData, SampleData),
+    PatternOperation(usize, PatternOperation),
+    SetOrder(usize, PatternOrder),
+}
+
+/// keep in sync with SongOperation
 #[derive(Clone)]
-pub(crate) enum SongOperation {
+pub(crate) enum ValidOperation {
     SetVolume(usize, u8),
     SetPan(usize, Pan),
     SetSample(usize, SampleMetaData, Shared<SampleData>),
@@ -185,14 +214,38 @@ pub(crate) enum SongOperation {
     SetOrder(usize, PatternOrder),
 }
 
-impl simple_left_right::Absorb<SongOperation> for Song<true> {
-    fn absorb(&mut self, operation: SongOperation) {
+impl ValidOperation {
+    pub fn new(op: SongOperation, handle: &basedrop::Handle) -> Self {
+        match op {
+            SongOperation::SetVolume(c, v) => Self::SetVolume(c, v),
+            SongOperation::SetPan(c, pan) => Self::SetPan(c, pan),
+            SongOperation::SetSample(i, sample_meta_data, sample_data) => Self::SetSample(i, sample_meta_data, Shared::new(handle, sample_data)),
+            SongOperation::PatternOperation(i, pattern_operation) => Self::PatternOperation(i, pattern_operation),
+            SongOperation::SetOrder(i, pattern_order) => Self::SetOrder(i, pattern_order),
+        }
+    }
+}
+
+impl Debug for ValidOperation {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SetVolume(arg0, arg1) => f.debug_tuple("SetVolume").field(arg0).field(arg1).finish(),
+            Self::SetPan(arg0, arg1) => f.debug_tuple("SetPan").field(arg0).field(arg1).finish(),
+            Self::SetSample(arg0, arg1, arg2) => f.debug_tuple("SetSample").field(arg0).field(arg1).field(arg2.deref()).finish(),
+            Self::PatternOperation(arg0, arg1) => f.debug_tuple("PatternOperation").field(arg0).field(arg1).finish(),
+            Self::SetOrder(arg0, arg1) => f.debug_tuple("SetOrder").field(arg0).field(arg1).finish(),
+        }
+    }
+}
+
+impl simple_left_right::Absorb<ValidOperation> for Song<true> {
+    fn absorb(&mut self, operation: ValidOperation) {
         match operation {
-            SongOperation::SetVolume(chan, val) => self.volume[chan] = val,
-            SongOperation::SetPan(chan, val) => self.pan[chan] = val,
-            SongOperation::SetSample(sample, meta, data) => self.samples[sample] = Some((meta, Sample::<true>::new(data))),
-            SongOperation::PatternOperation(pattern, op) => self.patterns[pattern].apply_operation(op),
-            SongOperation::SetOrder(idx, order) => self.pattern_order[idx] = order,
+            ValidOperation::SetVolume(chan, val) => self.volume[chan] = val,
+            ValidOperation::SetPan(chan, val) => self.pan[chan] = val,
+            ValidOperation::SetSample(sample, meta, data) => self.samples[sample] = Some((meta, Sample::<true>::new(data))),
+            ValidOperation::PatternOperation(pattern, op) => self.patterns[pattern].apply_operation(op),
+            ValidOperation::SetOrder(idx, order) => self.pattern_order[idx] = order,
         }
     }
 }

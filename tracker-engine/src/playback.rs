@@ -1,9 +1,7 @@
 use std::ops::ControlFlow;
 
 use crate::{
-    audio_processing::{sample::SamplePlayer, Frame},
-    file::impulse_format::header::PatternOrder,
-    song::song::Song,
+    audio_processing::{sample::SamplePlayer, Frame}, file::impulse_format::header::PatternOrder, manager::audio_manager::PlaybackSettings, song::song::Song
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,6 +12,8 @@ pub struct PlaybackPosition {
 }
 
 pub struct PlaybackState<'sample, const GC: bool> {
+    playback_settings: PlaybackSettings,
+
     position: PlaybackPosition,
     // both of these count down
     tick: u8,
@@ -51,16 +51,27 @@ impl<'sample, const GC: bool> PlaybackState<'sample, GC> {
 }
 
 macro_rules! new {
-    ($song:ident, $samplerate:ident) => {{
-        let mut order = 0;
-        let pattern = $song.next_pattern(&mut order)?;
-        let position = PlaybackPosition {
-            order,
-            pattern: usize::from(pattern),
-            row: 0,
+    ($song:ident, $samplerate:ident, $settings:ident) => {{
+        let position = match $settings {
+            PlaybackSettings::Pattern{idx: pattern, should_loop: _} => {
+                PlaybackPosition {
+                    order: 0,
+                    pattern,
+                    row: 0,
+                }
+            },
+            PlaybackSettings::Order{idx: mut order, should_loop: _} => {
+                let pattern = $song.next_pattern(&mut order)?;
+                PlaybackPosition {
+                    order,
+                    pattern: usize::from(pattern),
+                    row: 0,
+                }
+            },
         };
 
         let mut out = Self {
+            playback_settings: $settings,
             position,
             tick: $song.initial_speed,
             frame: Self::frames_per_tick($samplerate, $song.initial_tempo),
@@ -75,15 +86,15 @@ macro_rules! new {
 
 impl PlaybackState<'static, true> {
     /// None if the Song doesnt have any pattern in its OrderList
-    pub fn new(song: &Song<true>, samplerate: u32) -> Option<Self> {
-        new!(song, samplerate)
+    pub fn new(song: &Song<true>, samplerate: u32, settings: PlaybackSettings) -> Option<Self> {
+        new!(song, samplerate, settings)
     }
 }
 
 impl<'sample> PlaybackState<'sample, false> {
     /// None if the Song doesnt have any pattern in its OrderList
-    pub fn new(song: &'sample Song<false>, samplerate: u32) -> Option<Self> {
-        new!(song, samplerate)
+    pub fn new(song: &'sample Song<false>, samplerate: u32, settings: PlaybackSettings) -> Option<Self> {
+        new!(song, samplerate, settings)
     }
 }
 
@@ -124,6 +135,7 @@ impl<const INTERPOLATION: u8, const GC: bool> PlaybackIter<'_, '_, '_, INTERPOLA
 
     /// do everything needed for stepping except for putting the samples into the voices.
     /// on true that needs to be done otherwise not.
+    /// true also means that the PlaybackPosition has changed
     fn step_generic(&mut self) -> bool {
         if self.state.frame > 0 {
             self.state.frame -= 1;
@@ -151,6 +163,10 @@ impl<const INTERPOLATION: u8, const GC: bool> PlaybackIter<'_, '_, '_, INTERPOLA
         }
 
         true
+    }
+
+    pub fn get_position(&self) -> PlaybackPosition {
+        self.state.get_position()
     }
 }
 

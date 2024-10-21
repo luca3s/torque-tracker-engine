@@ -1,11 +1,9 @@
 use std::fmt::Debug;
 use std::ops::{AddAssign, IndexMut};
-use std::sync::mpsc::Receiver;
 
 use crate::audio_processing::sample::Interpolation;
 use crate::audio_processing::Frame;
-use crate::manager::audio_manager::OutputConfig;
-use crate::playback::PlaybackPosition;
+use crate::manager::audio_manager::{AudioMsgConfig, FromWorkerMsg, OutputConfig, PlaybackSettings};
 use crate::song::note_event::NoteEvent;
 use crate::song::song::Song;
 use crate::{audio_processing::sample::SamplePlayer, playback::PlaybackState};
@@ -16,7 +14,8 @@ pub(crate) struct LiveAudio {
     song: Reader<Song<true>>,
     playback_state: Option<PlaybackState<'static, true>>,
     live_note: Option<SamplePlayer<'static, true>>,
-    manager: Receiver<ToWorkerMsg>,
+    // replace with something explicitly realtime safe. I think std mpsc does syscalls to sleep and wake the thread
+    manager: rtrb::Consumer<ToWorkerMsg>,
     audio_msg_config: AudioMsgConfig,
     to_app: rtrb::Producer<FromWorkerMsg>,
     config: OutputConfig,
@@ -26,9 +25,10 @@ pub(crate) struct LiveAudio {
 impl LiveAudio {
     const INTERPOLATION: u8 = Interpolation::Linear as u8;
 
+    /// Not realtime safe.
     pub fn new(
         song: Reader<Song<true>>,
-        manager: Receiver<ToWorkerMsg>,
+        manager: rtrb::Consumer<ToWorkerMsg>,
         audio_msg_config: AudioMsgConfig,
         to_app: rtrb::Producer<FromWorkerMsg>,
         config: OutputConfig,
@@ -50,11 +50,12 @@ impl LiveAudio {
     fn fill_internal_buffer(&mut self) -> bool {
         let song = self.song.lock();
 
-        for event in self.manager.try_iter() {
+        // process manager events
+        while let Ok(event) = self.manager.pop() {
             match event {
                 ToWorkerMsg::StopPlayback => self.playback_state = None,
-                ToWorkerMsg::Playback(_) => {
-                    self.playback_state = PlaybackState::<true>::new(&song, self.config.sample_rate);
+                ToWorkerMsg::Playback(settings) => {
+                    self.playback_state = PlaybackState::<true>::new(&song, self.config.sample_rate, settings);
                 }
                 ToWorkerMsg::PlayEvent(note) => {
                     if let Some(sample) = &song.samples[usize::from(note.sample_instr)] {
@@ -75,8 +76,10 @@ impl LiveAudio {
         }
 
         // clear buffer from past run
+        // only happens if there is work todo
         self.buffer.fill(Frame::default());
 
+        // process live_note
         if let Some(live_note) = &mut self.live_note {
             let note_iter = live_note.iter::<{ Self::INTERPOLATION }>();
             self.buffer
@@ -89,16 +92,23 @@ impl LiveAudio {
             }
         }
 
+        // process song playback
         if let Some(playback) = &mut self.playback_state {
-            let position = playback.get_position();
+            let old_position = playback.get_position();
             let playback_iter = playback.iter::<{ Self::INTERPOLATION }>(&song);
             self.buffer
                 .iter_mut()
                 .zip(playback_iter)
                 .for_each(|(buf, frame)| buf.add_assign(frame));
 
-            if self.audio_msg_config.playback_position && position != playback.get_position() {
+            if self.audio_msg_config.playback_position && old_position != playback.get_position() {
                 let _ = self.to_app.push(FromWorkerMsg::CurrentPlaybackPosition(playback.get_position()));
+            }
+
+            // creatign a PlaybackIter is very inexpensive, so no reason to not rebuild it
+            let playback_iter = playback.iter::<{ Self::INTERPOLATION }>(&song);
+            if playback_iter.check_position().is_break() {
+                self.playback_state = None;
             }
         }
 
@@ -194,24 +204,10 @@ fn sine(output: &mut [[f32; 2]], sample_rate: f32) {
     }
 }
 
-#[derive(Default)]
-pub struct AudioMsgConfig {
-    pub buffer_finished: bool,
-    pub playback_position: bool,
-}
-
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum ToWorkerMsg {
     StopPlayback,
     // need some way to encode information about pattern / position
     Playback(PlaybackSettings),
     PlayEvent(NoteEvent),
-}
-
-pub struct PlaybackSettings {}
-
-#[derive(Debug)]
-pub enum FromWorkerMsg {
-    BufferFinished(cpal::OutputStreamTimestamp),
-    CurrentPlaybackPosition(PlaybackPosition),
-    PlaybackStopped,
 }

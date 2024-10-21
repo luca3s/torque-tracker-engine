@@ -11,7 +11,7 @@ pub struct InFilePtr(pub(crate) std::num::NonZeroU32);
 
 impl InFilePtr {
     /// Move the Read Cursor to the value of the file ptr
-    pub fn seek_to_pos<S: std::io::Seek>(self, seeker: &mut S) -> Result<(), std::io::Error>{
+    pub fn move_to_self<S: std::io::Seek>(self, seeker: &mut S) -> Result<(), std::io::Error>{
         seeker.seek(std::io::SeekFrom::Start(self.0.get().into())).map(|_| ())
     }
 }
@@ -27,7 +27,7 @@ pub fn parse_song<R: std::io::Read + std::io::Seek, H: FnMut(LoadDefect)>(reader
 
     // parse patterns
     for (idx, ptr) in header.pattern_offsets.iter().enumerate().flat_map(|(idx, ptr)| ptr.map(|ptr| (idx, ptr))) {
-        ptr.seek_to_pos(reader)?;
+        ptr.move_to_self(reader)?;
         let pattern = pattern::parse_pattern(reader, defect_handler)?;
         song.patterns[idx] = pattern;
     }

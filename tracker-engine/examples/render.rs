@@ -1,13 +1,10 @@
 use impulse_engine::{
-    file::impulse_format::header::PatternOrder,
-    playback::PlaybackState,
-    sample::{Sample, SampleData, SampleMetaData},
-    song::{
+    file::impulse_format::header::PatternOrder, manager::audio_manager::PlaybackSettings, playback::PlaybackState, sample::{Sample, SampleData, SampleMetaData}, song::{
         event_command::NoteCommand,
         note_event::{Note, NoteEvent, VolumeEffect},
         pattern::InPatternPosition,
         song::Song,
-    },
+    }
 };
 
 use cpal::Sample as DASPSample;
@@ -49,7 +46,7 @@ fn main() {
         },
     );
 
-    let mut playback = PlaybackState::<false>::new(&song, 44100).unwrap();
+    let mut playback = PlaybackState::<false>::new(&song, 44100, PlaybackSettings::default()).unwrap();
     let iter = playback.iter::<0>(&song);
     for _ in iter.take(50) {
         // dbg!(frame);

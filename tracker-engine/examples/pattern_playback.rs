@@ -2,14 +2,13 @@ use std::{num::NonZeroU16, time::Duration};
 
 use cpal::{traits::DeviceTrait, Sample};
 use impulse_engine::{
-    live_audio::{AudioMsgConfig, PlaybackSettings},
-    manager::audio_manager::{AudioManager, OutputConfig},
+    manager::audio_manager::{AudioManager, AudioMsgConfig, OutputConfig, PlaybackSettings},
     sample::{SampleData, SampleMetaData},
     song::{
         event_command::NoteCommand,
         note_event::{Note, NoteEvent, VolumeEffect},
         pattern::{InPatternPosition, PatternOperation},
-        song::Song,
+        song::{Song, SongOperation},
     },
 };
 
@@ -31,7 +30,7 @@ fn main() {
     };
 
     let mut song = manager.edit_song();
-    song.set_sample(0, meta, sample);
+    song.apply_operation(SongOperation::SetSample(0, meta, sample)).unwrap();
     for i in 0..12 {
         let command = PatternOperation::SetEvent {
             position: InPatternPosition {
@@ -45,12 +44,10 @@ fn main() {
                 command: NoteCommand::None,
             },
         };
-        song.pattern_operation(0, command);
+        song.apply_operation(SongOperation::PatternOperation(0, command)).unwrap();
     }
-    song.set_order(
-        0,
-        impulse_engine::file::impulse_format::header::PatternOrder::Number(0),
-    );
+    song.apply_operation(SongOperation::SetOrder(0, impulse_engine::file::impulse_format::header::PatternOrder::Number(0))).unwrap();
+
     song.finish();
     dbg!(manager.get_song());
     // return;
@@ -77,7 +74,7 @@ fn main() {
         )
         .unwrap();
 
-    manager.play_song(PlaybackSettings {});
+    manager.play_song(PlaybackSettings::default());
 
     std::thread::sleep(Duration::from_secs(5));
     manager.deinit_audio();

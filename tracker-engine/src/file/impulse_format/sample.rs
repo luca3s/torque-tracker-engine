@@ -160,13 +160,7 @@ pub struct ImpulseSampleHeader {
 impl ImpulseSampleHeader {
     const SIZE: usize = 80;
 
-    pub fn parse<R: std::io::Read, H: FnMut(LoadDefect)>(reader: &mut R, defect_handler: &mut H) -> Result<Self, LoadErr> {
-        let buf = {
-            let mut buf = [0; Self::SIZE];
-            reader.read_exact(&mut buf)?;
-            buf
-        };
-
+    pub fn parse<H: FnMut(LoadDefect)>(buf: &[u8; Self::SIZE], defect_handler: &mut H) -> Result<Self, LoadErr> {
         if !buf.starts_with(b"IMPS") {
             return Err(LoadErr::Invalid);
         }

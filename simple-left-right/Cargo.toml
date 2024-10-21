@@ -5,18 +5,21 @@ edition = "2021"
 rust-version = "1.82"
 readme = "README.md"
 authors = ["Lucas Baumann"]
-keywords = ["real-time", "lock-free", "data-structures", "read-write", "concurrency"]
+keywords = ["real-time", "lock-free", "data-structures", "read-write", "concurrency", "no-std"]
 categories = ["concurrency"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/luca3s/tracker-engine"
 description = "Lockfree, realtime safe and copy-free Synchronisation"
-workspace = "../"
+# workspace = "../"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+default = []
+
+# enable thread sleeping on spin-locks
+std = ["crossbeam-utils/std"]
+
 [dependencies]
 # only for backoff spinlocks. std feature active so it can use thread::yield
-crossbeam-utils = "0.8.20"
-
-[target.'cfg(loom)'.dependencies]
-loom = "0.7"
+crossbeam-utils = { version = "0.8.20", default-features = false }

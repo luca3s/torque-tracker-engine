@@ -101,14 +101,7 @@ pub struct ImpulseInstrument {
 impl ImpulseInstrument {
     const SIZE: usize = 554;
 
-    /// size in file is 554 bytes
-    pub fn parse<R: Read, H: FnMut(LoadDefect)>(reader: &mut R, defect_handler: &mut H) -> Result<Self, err::LoadErr> {
-        let buf = {
-            let mut buf = [0; Self::SIZE];
-            reader.read_exact(&mut buf)?;
-            buf
-        };
-
+    pub fn parse<H: FnMut(LoadDefect)>(buf: &[u8; Self::SIZE], defect_handler: &mut H) -> Result<Self, err::LoadErr> {
         if !buf.starts_with(b"IMPI") {
             return Err(err::LoadErr::Invalid);
         }
@@ -249,7 +242,6 @@ pub struct ImpulseEnvelope {
 impl ImpulseEnvelope {
     const SIZE: usize = 81; // = 0x51
 
-    /// doesn't take a reader as it is only used in instrument loading where the whole thing is already loaded
     fn load(buf: &[u8; Self::SIZE]) -> Self {
         let flags = buf[0];
         let num_node_points = buf[1];

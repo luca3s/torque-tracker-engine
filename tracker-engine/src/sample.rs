@@ -4,6 +4,9 @@ use basedrop::Shared;
 
 use crate::{file::impulse_format::sample::VibratoWave, song::note_event::Note};
 
+// This ugliness won't be needed anymore as soon as Return Type Notatiion in type positions is available
+// https://blog.rust-lang.org/inside-rust/2024/09/26/rtn-call-for-testing.html
+// I could also keep it as it simplifies API everywhere else a lot and makes sure only my defined Types can "impl the trait"
 pub union SampleRef<'a, const GC: bool> {
     gc: ManuallyDrop<Shared<SampleData>>,
     reference: &'a SampleData,
@@ -26,7 +29,7 @@ impl<'a> SampleRef<'a, false> {
         SampleRef { reference: data }
     }
 
-    pub fn get(&self) -> &'a SampleData {
+    pub fn get(&self) -> &SampleData {
         unsafe { self.reference }
     }
 }
@@ -53,9 +56,8 @@ impl<const GC: bool> Deref for SampleRef<'_, GC> {
 
 impl<const GC: bool> Drop for SampleRef<'_, GC> {
     fn drop(&mut self) {
-        match GC {
-            true => unsafe { ManuallyDrop::drop(&mut self.gc) },
-            false => (),
+        if GC {
+            unsafe { ManuallyDrop::drop(&mut self.gc) };
         }
     }
 }
@@ -106,9 +108,7 @@ impl Sample<true> {
 
     pub fn to_owned(&self) -> Sample<false> {
         let shared = unsafe { self.gc.deref() }.deref();
-        Sample {
-            owned: ManuallyDrop::new(shared.clone()),
-        }
+        Sample::<false>::new(shared.clone())
     }
 }
 
@@ -136,9 +136,7 @@ impl Sample<false> {
     pub fn to_gc(self, handle: &basedrop::Handle) -> Sample<true> {
         let data = self.take();
         let shared = basedrop::Shared::new(handle, data);
-        Sample {
-            gc: ManuallyDrop::new(shared),
-        }
+        Sample::<true>::new(shared)
     }
 }
 

@@ -35,6 +35,11 @@ impl Interpolation {
 }
 
 #[derive(Debug)]
+enum RealTimeEffectState {
+    PitchSlide
+}
+
+#[derive(Debug)]
 pub struct SamplePlayer<'sample, const GC: bool> {
     sample: SampleRef<'sample, GC>,
     meta_data: SampleMetaData,
@@ -82,6 +87,7 @@ impl<'sample, const GC: bool> SamplePlayer<'sample, GC> {
         }
     }
 
+    #[inline]
     fn compute_step_size(
         in_rate: u32,
         out_rate: u32,

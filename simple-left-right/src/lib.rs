@@ -22,18 +22,19 @@
     clippy::undocumented_unsafe_blocks
 )]
 
-use std::{
-    cell::UnsafeCell,
-    collections::VecDeque,
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+
+use core::{
     hint::assert_unchecked,
     marker::PhantomData,
     mem::MaybeUninit,
     ops::Deref,
-    sync::{
-        atomic::{fence, AtomicU8, Ordering},
-        Arc,
-    },
+    sync::atomic::{fence, AtomicU8, Ordering}
 };
+
+use alloc::{collections::vec_deque::VecDeque, sync::Arc};
 
 mod inner;
 
@@ -272,6 +273,7 @@ impl<T: Absorb<O>, O> Writer<T, O> {
                 break;
             }
 
+            // different behaviour between std and no-std (thread-sleeping)
             backoff.snooze();
         }
 
@@ -298,26 +300,16 @@ impl<T: Clone, O> Writer<T, O> {
     pub fn new(value: T) -> Self {
         let mut shared: Arc<MaybeUninit<Shared<T>>> = Arc::new_uninit();
 
-        // SAFETY: Arc was just created
-        let shared_ptr = unsafe { Arc::get_mut(&mut shared).unwrap_unchecked() }.as_mut_ptr();
+        // SAFETY: Arc was just created, therefore no one has acces to it.
+        // Every field gets initialized
+        let shared = unsafe {
+            let shared_ptr = Arc::get_mut(&mut shared).unwrap_unchecked().as_mut_ptr();
+            (&raw mut (*shared_ptr).state).write(AtomicU8::new(0b000));
+            (&raw mut (*shared_ptr).value_1).cast::<T>().write(value.clone());
+            (&raw mut (*shared_ptr).value_2).cast::<T>().write(value);
+            shared.assume_init()
+        };
 
-        // SAFETY: doesn't really deref the ptr, uses raw ref to get another pointer
-        let state_ptr: *mut AtomicU8 = unsafe { &raw mut (*shared_ptr).state };
-        // SAFETY: Ptr is valid, Arc allocated it
-        unsafe { state_ptr.write(AtomicU8::new(0b000)) };
-
-        // SAFETY: doesn't really deref the ptr, uses raw ref to get another pointer
-        let value_1_ptr: *mut UnsafeCell<T> = unsafe { &raw mut (*shared_ptr).value_1 };
-        // SAFETY: UnsafeCell<T> has the same memory Layout as T
-        unsafe { value_1_ptr.cast::<T>().write(value.clone()) };
-
-        // SAFETY: doesn't really deref the ptr, uses raw ref to get another pointer
-        let value_2_ptr: *mut UnsafeCell<T> = unsafe { &raw mut (*shared_ptr).value_2 };
-        // SAFETY: UnsafeCell<T> has the same memory Layout as T
-        unsafe { value_2_ptr.cast::<T>().write(value) };
-
-        // SAFETY: all fields of shared were initialized
-        let shared: Arc<Shared<T>> = unsafe { shared.assume_init() };
         Writer {
             shared,
             write_ptr: Ptr::Value2,
@@ -329,30 +321,20 @@ impl<T: Clone, O> Writer<T, O> {
 impl<T: Default, O> Default for Writer<T, O> {
     /// Creates a new Writer by calling `T::default()` twice to create the two values
     ///
-    /// Default impl of T needs to give the same result every time. Doesn't lead to UB, but turns the library basically useless
+    /// Default impl of T needs to give the same result every time. Not upholding this doens't lead to UB, but turns the library basically useless
     fn default() -> Self {
         let mut shared: Arc<MaybeUninit<Shared<T>>> = Arc::new_uninit();
 
-        // SAFETY: Arc was just created
-        let shared_ptr = unsafe { Arc::get_mut(&mut shared).unwrap_unchecked() }.as_mut_ptr();
+        // SAFETY: Arc was just created, therefore no one has acces to it.
+        // Every field gets initialized
+        let shared = unsafe {
+            let shared_ptr = Arc::get_mut(&mut shared).unwrap_unchecked().as_mut_ptr();
+            (&raw mut (*shared_ptr).state).write(AtomicU8::new(0b000));
+            (&raw mut (*shared_ptr).value_1).cast::<T>().write(T::default());
+            (&raw mut (*shared_ptr).value_2).cast::<T>().write(T::default());
+            shared.assume_init()
+        };
 
-        // SAFETY: doesn't really deref the ptr, uses raw ref to get another pointer
-        let state_ptr: *mut AtomicU8 = unsafe { &raw mut (*shared_ptr).state };
-        // SAFETY: Ptr is valid, Arc allocated it
-        unsafe { state_ptr.write(AtomicU8::new(0b000)) };
-
-        // SAFETY: doesn't really deref the ptr, uses raw ref to get another pointer
-        let value_1_ptr: *mut UnsafeCell<T> = unsafe { &raw mut (*shared_ptr).value_1 };
-        // SAFETY: UnsafeCell<T> has the same memory Layout as T
-        unsafe { value_1_ptr.cast::<T>().write(T::default()) };
-
-        // SAFETY: doesn't really deref the ptr, uses raw ref to get another pointer
-        let value_2_ptr: *mut UnsafeCell<T> = unsafe { &raw mut (*shared_ptr).value_2 };
-        // SAFETY: UnsafeCell<T> has the same memory Layout as T
-        unsafe { value_2_ptr.cast::<T>().write(T::default()) };
-
-        // SAFETY: all fields of shared were initialized
-        let shared: Arc<Shared<T>> = unsafe { shared.assume_init() };
         Writer {
             shared,
             write_ptr: Ptr::Value2,

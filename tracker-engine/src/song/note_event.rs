@@ -1,4 +1,4 @@
-use std::fmt::{Display, Write};
+use std::{error::Error, fmt::{Display, Write}};
 
 use crate::song::event_command::NoteCommand;
 
@@ -86,8 +86,19 @@ pub enum VolumeEffect {
     None,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct InvalidVolumeEffect;
+
+impl Display for InvalidVolumeEffect {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Invalid Volume Effect")
+    }
+}
+
+impl Error for InvalidVolumeEffect {}
+
 impl TryFrom<u8> for VolumeEffect {
-    type Error = u8;
+    type Error = InvalidVolumeEffect;
 
     /// IT Tracker Format Conversion
     /// no way to get None, as then it just doesn't get set
@@ -103,7 +114,7 @@ impl TryFrom<u8> for VolumeEffect {
             128..=192 => Ok(Self::Panning(value - 128)),
             193..=202 => Ok(Self::SlideToNoteWithSpeed(value - 193)),
             203..=212 => Ok(Self::VibratoWithSpeed(value - 203)),
-            _ => Err(value),
+            _ => Err(InvalidVolumeEffect),
         }
     }
 }

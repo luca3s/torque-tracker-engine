@@ -23,10 +23,10 @@ mod test {
     }
 }
 
-// Events are sorted with the row number as first and channel number as second key.
 #[derive(Clone, Debug)]
 pub struct Pattern {
     rows: u16,
+    // Events are sorted with InPatternPosition as the key.
     data: Vec<(InPatternPosition, NoteEvent)>,
 }
 
@@ -127,7 +127,12 @@ impl Pattern {
 impl Index<u16> for Pattern {
     type Output = [(InPatternPosition, NoteEvent)];
 
+    /// # Out of Bounds
+    /// Debug: Panic
+    /// 
+    /// Release: Empty slice
     fn index(&self, index: u16) -> &Self::Output {
+        // only a debug assert because if out of bounds the output is simply empty
         debug_assert!(index <= self.rows);
         let start_position = self.data.partition_point(|(pos, _)| {
             *pos < InPatternPosition {
@@ -135,6 +140,7 @@ impl Index<u16> for Pattern {
                 channel: 0,
             }
         });
+        // only search after start_position
         let end_position =
             self.data[start_position..self.data.len()].partition_point(|(pos, _)| {
                 *pos < InPatternPosition {
@@ -160,7 +166,6 @@ impl IndexMut<InPatternPosition> for Pattern {
     }
 }
 
-/// assumes the Operations are correct (not out of bounds, ...)
 #[derive(Debug, Clone, Copy)]
 pub enum PatternOperation {
     SetLength {

@@ -2,8 +2,7 @@ use std::{num::NonZeroU16, time::Duration};
 
 use cpal::{traits::DeviceTrait, Sample};
 use impulse_engine::{
-    live_audio::AudioMsgConfig,
-    manager::audio_manager::{AudioManager, OutputConfig},
+    manager::audio_manager::{AudioManager, AudioMsgConfig, OutputConfig},
     sample::{SampleData, SampleMetaData},
     song::{self, note_event::{Note, NoteEvent}, song::Song},
 };
@@ -24,7 +23,7 @@ fn main() {
         ..Default::default()
     };
 
-    manager.edit_song().set_sample(1, meta, sample);
+    manager.edit_song().apply_operation(song::song::SongOperation::SetSample(1, meta, sample)).unwrap();
 
     let default_device = AudioManager::default_device().unwrap();
     let default_config = default_device.default_output_config().unwrap();
@@ -58,7 +57,7 @@ fn main() {
     std::thread::sleep(Duration::from_secs(1));
     manager.play_note(note_event);
     std::thread::sleep(Duration::from_secs(1));
-    while let Ok(event) = recv.try_next() {
+    while let Ok(event) = recv.pop() {
         println!("{event:?}");
     }
 }
