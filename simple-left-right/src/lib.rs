@@ -26,6 +26,11 @@
 
 extern crate alloc;
 
+#[cfg(feature = "std")]
+use std::thread;
+#[cfg(feature = "std")]
+use core::time::Duration;
+
 use core::{
     hint::assert_unchecked,
     marker::PhantomData,
@@ -258,7 +263,8 @@ impl<T, O> Writer<T, O> {
 impl<T: Absorb<O>, O> Writer<T, O> {
     /// Blocks if the Reader has a `ReadGuard` pointing to the old value.
     ///
-    /// Uses a Spinlock because for anything else the OS needs to be involved. Reader can't talk to the OS.
+    /// Uses a Spinlock because for anything else the OS needs to be involved and `Reader` can't talk to the OS.
+    #[cfg(not(feature = "std"))]
     pub fn lock(&mut self) -> WriteGuard<'_, T, O> {
         let backoff = crossbeam_utils::Backoff::new();
 
@@ -273,8 +279,68 @@ impl<T: Absorb<O>, O> Writer<T, O> {
                 break;
             }
 
-            // different behaviour between std and no-std (thread-sleeping)
             backoff.snooze();
+        }
+
+        // SAFETY: The spinloop before is only exited once the ReadState allows writing to the current
+        // write_ptr value.
+        unsafe { WriteGuard::new(self) }
+    }
+
+    /// Blocks if the Reader has a `ReadGuard` pointing to the old value.
+    /// 
+    /// Uses a spin-lock, because the `Reader` can't talk to the OS. Sleeping and Yielding is done to avoid wasting cycles.
+    /// Equivalent to ´lock´, except that it starts sleeping the given duration after a certaint point until the lock could be aquired.
+    #[cfg(feature = "std")]
+    pub fn lock(&mut self, sleep: Duration) -> WriteGuard<'_, T, O> {
+        let backoff = crossbeam_utils::Backoff::new();
+
+        loop {
+            // operation has to be aquire, but only the time it breaks the loop
+            let state = self.shared.state.load(Ordering::Relaxed);
+
+            if ReadState::from(state).can_write(self.write_ptr) {
+                // make the load operation aquire, only when it actually breaks the loop
+                // the important (last) load is aquire, while all loads before are relaxed
+                fence(Ordering::Acquire);
+                break;
+            }
+
+            if backoff.is_completed() {
+                thread::sleep(sleep);
+            } else {
+                backoff.snooze();
+            }
+        }
+
+        // SAFETY: The spinloop before is only exited once the ReadState allows writing to the current
+        // write_ptr value.
+        unsafe { WriteGuard::new(self) }
+    }
+
+    /// Equivalent to `lock` but the sleeping is done asyncly to not block the runtime.
+    /// It is still a spinlock, it just give control to the runtime when locking is slow, before trying again.
+    #[cfg(feature = "async")]
+    pub async fn async_lock(&mut self, sleep: Duration) -> WriteGuard<'_, T, O> {
+        let backoff = crossbeam_utils::Backoff::new();
+
+        loop {
+            // operation has to be aquire, but only the time it breaks the loop
+            let state = self.shared.state.load(Ordering::Relaxed);
+
+            if ReadState::from(state).can_write(self.write_ptr) {
+                // make the load operation aquire, only when it actually breaks the loop
+                // the important (last) load is aquire, while all loads before are relaxed
+                fence(Ordering::Acquire);
+                break;
+            }
+
+            if backoff.is_completed() {
+                async_io::Timer::after(sleep).await;
+            } else {
+                backoff.spin();
+                futures_lite::future::yield_now().await;
+            }
         }
 
         // SAFETY: The spinloop before is only exited once the ReadState allows writing to the current

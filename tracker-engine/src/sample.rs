@@ -2,18 +2,18 @@ use std::{borrow::Borrow, fmt::Debug, mem::ManuallyDrop, ops::Deref};
 
 use basedrop::Shared;
 
-use crate::{file::impulse_format::sample::VibratoWave, song::note_event::Note};
+use crate::{file::impulse_format::sample::VibratoWave, project::note_event::Note};
 
 // This ugliness won't be needed anymore as soon as Return Type Notatiion in type positions is available
 // https://blog.rust-lang.org/inside-rust/2024/09/26/rtn-call-for-testing.html
 // I could also keep it as it simplifies API everywhere else a lot and makes sure only my defined Types can "impl the trait"
-pub union SampleRef<'a, const GC: bool> {
+pub(crate) union SampleRef<'a, const GC: bool> {
     gc: ManuallyDrop<Shared<SampleData>>,
     reference: &'a SampleData,
 }
 
 impl SampleRef<'static, true> {
-    pub fn new(data: Shared<SampleData>) -> Self {
+    pub(crate) fn new(data: Shared<SampleData>) -> Self {
         SampleRef {
             gc: ManuallyDrop::new(data),
         }

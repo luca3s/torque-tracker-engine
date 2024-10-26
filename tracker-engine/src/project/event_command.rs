@@ -1,39 +1,39 @@
 #[derive(Debug, Default, Copy, Clone)]
 pub enum NoteCommand {
     #[default]
-    None,                           // _, 0
-    SetTempo(u8),                   // A, 1
-    JumpToOrder(u8),                // B, 2
-    BreakToRow(u8),                 // C, 3
+    None, // _, 0
+    SetTempo(u8),    // A, 1
+    JumpToOrder(u8), // B, 2
+    BreakToRow(u8),  // C, 3
     /// Has lot of extra effects depending on value
-    VolumeSlideDown(u8),            // D, 4
-    PitchSlideDown(u8),             // E, 5
-    PitchSlideUp(u8),               // F, 6
-    SlideToNote(u8),                // G, 7
-    Vibrato(u8),                    // H, 8
-    Tremor(u8),                     // I, 9
-    Arpeggio(u8),                   // J, 10
-    VibratoAndVolSlideDown(u8),     // K, 11
+    VolumeSlideDown(u8), // D, 4
+    PitchSlideDown(u8), // E, 5
+    PitchSlideUp(u8), // F, 6
+    SlideToNote(u8), // G, 7
+    Vibrato(u8),     // H, 8
+    Tremor(u8),      // I, 9
+    Arpeggio(u8),    // J, 10
+    VibratoAndVolSlideDown(u8), // K, 11
     SlideToNoteAndVolSlideDown(u8), // L, 12
-    SetChannelVol(u8),              // M, 13
+    SetChannelVol(u8), // M, 13
     /// Some extra effects depending on value
-    ChannelVolumeSlideDown(u8),     // N, 14
-    SetSampleOffset(u8),            // O. 15
+    ChannelVolumeSlideDown(u8), // N, 14
+    SetSampleOffset(u8), // O. 15
     /// also can do fine panning
-    PanningSlide(u8),               // P, 16
-    RetriggerNote(u8),               // Q, 17
-    Tremolo(u8),                    // R, 18
+    PanningSlide(u8), // P, 16
+    RetriggerNote(u8), // Q, 17
+    Tremolo(u8),     // R, 18
     /// Can do a lot of stuff, most of which doesn't have a value
-    AlmostEverything(u8),           // S, 19
+    AlmostEverything(u8), // S, 19
     /// Can also do slides
-    TempoChange(u8),                // T, 20
-    FineVibrato(u8),                // U, 21
-    SetGlobalVolume(u8),            // V, 22
-    GlobalVolumeSlide(u8),          // W, 23
-    SetPanning(u8),                 // X, 24
-    Panbrello(u8),                  // Y, 25
-    MIDIMacros(u8),                 // Z, 26
-    // Effect byte value reaches until 31, so some missing?
+    TempoChange(u8), // T, 20
+    FineVibrato(u8), // U, 21
+    SetGlobalVolume(u8), // V, 22
+    GlobalVolumeSlide(u8), // W, 23
+    SetPanning(u8),  // X, 24
+    Panbrello(u8),   // Y, 25
+    MIDIMacros(u8),  // Z, 26
+                     // Effect byte value reaches until 31, so some missing?
 }
 
 pub struct UnknownCommand;

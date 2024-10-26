@@ -1,12 +1,13 @@
 use std::fmt::Debug;
 use std::ops::{AddAssign, IndexMut};
 
+use crate::audio_processing::playback::PlaybackState;
 use crate::audio_processing::sample::Interpolation;
+use crate::audio_processing::sample::SamplePlayer;
 use crate::audio_processing::Frame;
-use crate::manager::audio_manager::{AudioMsgConfig, FromWorkerMsg, OutputConfig, PlaybackSettings};
-use crate::song::note_event::NoteEvent;
-use crate::song::song::Song;
-use crate::{audio_processing::sample::SamplePlayer, playback::PlaybackState};
+use crate::manager::{AudioMsgConfig, FromWorkerMsg, OutputConfig, PlaybackSettings};
+use crate::project::note_event::NoteEvent;
+use crate::project::song::Song;
 use cpal::{Sample, SampleFormat};
 use simple_left_right::Reader;
 
@@ -55,18 +56,20 @@ impl LiveAudio {
             match event {
                 ToWorkerMsg::StopPlayback => self.playback_state = None,
                 ToWorkerMsg::Playback(settings) => {
-                    self.playback_state = PlaybackState::<true>::new(&song, self.config.sample_rate, settings);
+                    self.playback_state =
+                        PlaybackState::<true>::new(&song, self.config.sample_rate, settings);
                 }
                 ToWorkerMsg::PlayEvent(note) => {
                     if let Some(sample) = &song.samples[usize::from(note.sample_instr)] {
                         let sample_player = SamplePlayer::new(
                             (sample.0, sample.1.get_ref()),
                             self.config.sample_rate / 2,
-                            note.note
+                            note.note,
                         );
                         self.live_note = Some(sample_player);
                     }
                 }
+                ToWorkerMsg::StopLiveNote => self.live_note = None,
             }
         }
 
@@ -87,7 +90,7 @@ impl LiveAudio {
                 .zip(note_iter)
                 .for_each(|(buf, note)| buf.add_assign(note));
 
-            if live_note.check_position().is_break() {
+            if live_note.is_done() {
                 self.live_note = None;
             }
         }
@@ -102,12 +105,12 @@ impl LiveAudio {
                 .for_each(|(buf, frame)| buf.add_assign(frame));
 
             if self.audio_msg_config.playback_position && old_position != playback.get_position() {
-                let _ = self.to_app.push(FromWorkerMsg::CurrentPlaybackPosition(playback.get_position()));
+                let _ = self.to_app.push(FromWorkerMsg::CurrentPlaybackPosition(
+                    playback.get_position(),
+                ));
             }
 
-            // creatign a PlaybackIter is very inexpensive, so no reason to not rebuild it
-            let playback_iter = playback.iter::<{ Self::INTERPOLATION }>(&song);
-            if playback_iter.check_position().is_break() {
+            if playback.is_done() {
                 self.playback_state = None;
             }
         }
@@ -205,9 +208,9 @@ fn sine(output: &mut [[f32; 2]], sample_rate: f32) {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum ToWorkerMsg {
-    StopPlayback,
-    // need some way to encode information about pattern / position
+pub enum ToWorkerMsg {
     Playback(PlaybackSettings),
+    StopPlayback,
     PlayEvent(NoteEvent),
+    StopLiveNote,
 }

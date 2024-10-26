@@ -2,8 +2,9 @@ use std::ops::IndexMut;
 
 use cpal::Sample;
 
-pub mod instrument;
-pub mod sample;
+pub(crate) mod instrument;
+pub mod playback;
+pub(crate) mod sample;
 // pub mod resample;
 
 #[repr(transparent)]

@@ -31,10 +31,10 @@ impl Display for LoadErr {
 impl Error for LoadErr {}
 
 /// TODO: https://users.rust-lang.org/t/validation-monad/117894/6
-/// 
+///
 /// this is a way cleaner and nicer approach. Provice a lot of data about the Error, like position in file, expected value, received value, ...
 /// maybe even allow to cancel the parsing via ControlFlow<(), ()>
-/// 
+///
 /// load was partially successful. These are the defects that are in the now loaded project
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]

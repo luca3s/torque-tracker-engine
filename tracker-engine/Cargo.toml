@@ -11,15 +11,18 @@ readme = "README.md"
 keywords = ["audio"]
 categories = ["audio"]
 
+[features]
+async = ["dep:async-io", "dep:futures-lite", "dep:async-channel", "simple-left-right/async"]
+
 [dependencies]
+async-io = { version = "2.3.4", optional = true }
+futures-lite = { version = "2.3.0", optional = true, default-features = false }
+async-channel = { version = "2.3.1", optional = true }
 # added a couple features to it. pull requests don' really progress
 basedrop = "0.1.2" # miri reports Race Condition. Wait for fix or pull inside
 cpal = "0.15.3"
 crossbeam-utils = "0.8.20"
 rtrb = "0.3.1"
-# futures = { version="0.3.30", default-features = false, features = ["std"]}
-# used for the Select API on channels, which is really useful
-#flume = {  version = "0.11.0", default-features = false, features = ["select"]}
 simple-left-right = { path = "../simple-left-right", features = ["std"] }
 # assert_no_alloc
 

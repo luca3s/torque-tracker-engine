@@ -1,24 +1,106 @@
 use std::ops::ControlFlow;
 
 use crate::{
-    audio_processing::{sample::SamplePlayer, Frame}, file::impulse_format::header::PatternOrder, manager::audio_manager::PlaybackSettings, song::song::Song
+    audio_processing::{sample::SamplePlayer, Frame},
+    manager::PlaybackSettings,
+    project::song::Song,
 };
+
+// #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// pub struct PlaybackPosition {
+//     pub order: usize,
+//     pub pattern: usize,
+//     pub row: u16,
+// }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlaybackPosition {
-    pub order: usize,
+    /// changes behaviour on pattern end and loop behaviour
+    pub order: Option<usize>,
     pub pattern: usize,
     pub row: u16,
+    /// if order is Some this loops the whole song, otherwise it loops the set pattern
+    pub loop_active: bool,
+}
+
+impl PlaybackPosition {
+    #[inline]
+    fn step_row<const GC: bool>(&mut self, song: &Song<GC>) -> ControlFlow<()> {
+        self.row += 1;
+        if self.row >= song.patterns[self.pattern].row_count() {
+            // reset row count
+            self.row = 0;
+            // compute next pattern
+            if let Some(order) = &mut self.order {
+                // next pattern according to song orderlist
+                if let Some(pattern) = song.next_pattern(order) {
+                    // song not finished yet
+                    self.pattern = pattern.into();
+                    return ControlFlow::Continue(());
+                } else {
+                    // song is finished
+                    if !self.loop_active {
+                        // not looping, therefore break
+                        return ControlFlow::Break(());
+                    }
+                    // the song should loop
+                    // need to check if the song is empty now.
+                    *order = 0;
+                    if let Some(pattern) = song.next_pattern(order) {
+                        self.pattern = pattern.into();
+                        return ControlFlow::Continue(());
+                    } else {
+                        // the song is empty, so playback is stopped
+                        return ControlFlow::Break(());
+                    }
+                }
+            } else if self.loop_active {
+                // the row count was reset, nothing else to do
+                return ControlFlow::Continue(());
+            } else {
+                // no looping, pattern is done
+                return ControlFlow::Break(());
+            }
+        } else {
+            // Pattern not done yet
+            ControlFlow::Continue(())
+        }
+    }
+
+    /// if settings is pattern always returns Some
+    #[inline]
+    fn new<const GC: bool>(settings: PlaybackSettings, song: &Song<GC>) -> Option<Self> {
+        match settings {
+            PlaybackSettings::Pattern { idx, should_loop } => Some(Self {
+                order: None,
+                pattern: idx,
+                row: 0,
+                loop_active: should_loop,
+            }),
+            PlaybackSettings::Order {
+                mut idx,
+                should_loop,
+            } => {
+                let pattern = song.next_pattern(&mut idx)?;
+                Some(Self {
+                    order: Some(idx),
+                    pattern: pattern.into(),
+                    row: 0,
+                    loop_active: should_loop,
+                })
+            }
+        }
+    }
 }
 
 pub struct PlaybackState<'sample, const GC: bool> {
-    playback_settings: PlaybackSettings,
-
     position: PlaybackPosition,
+    is_done: bool,
     // both of these count down
     tick: u8,
     frame: u32,
 
+    // need to add more current_* stuff
     current_song_speed: u8,
 
     samplerate: u32,
@@ -46,33 +128,22 @@ impl<'sample, const GC: bool> PlaybackState<'sample, GC> {
 
     pub fn set_samplerate(&mut self, samplerate: u32) {
         self.samplerate = samplerate;
-        self.voices.iter_mut().flatten().for_each(|voice| voice.set_out_samplerate(samplerate));
+        self.voices
+            .iter_mut()
+            .flatten()
+            .for_each(|voice| voice.set_out_samplerate(samplerate));
+    }
+
+    pub fn is_done(&self) -> bool {
+        self.is_done
     }
 }
 
 macro_rules! new {
     ($song:ident, $samplerate:ident, $settings:ident) => {{
-        let position = match $settings {
-            PlaybackSettings::Pattern{idx: pattern, should_loop: _} => {
-                PlaybackPosition {
-                    order: 0,
-                    pattern,
-                    row: 0,
-                }
-            },
-            PlaybackSettings::Order{idx: mut order, should_loop: _} => {
-                let pattern = $song.next_pattern(&mut order)?;
-                PlaybackPosition {
-                    order,
-                    pattern: usize::from(pattern),
-                    row: 0,
-                }
-            },
-        };
-
         let mut out = Self {
-            playback_settings: $settings,
-            position,
+            position: PlaybackPosition::new($settings, $song)?,
+            is_done: false,
             tick: $song.initial_speed,
             frame: Self::frames_per_tick($samplerate, $song.initial_tempo),
             current_song_speed: $song.initial_speed,
@@ -85,15 +156,23 @@ macro_rules! new {
 }
 
 impl PlaybackState<'static, true> {
-    /// None if the Song doesnt have any pattern in its OrderList
-    pub fn new(song: &Song<true>, samplerate: u32, settings: PlaybackSettings) -> Option<Self> {
+    /// None if the settings in the order variant don't have any pattern to play
+    pub(crate) fn new(
+        song: &Song<true>,
+        samplerate: u32,
+        settings: PlaybackSettings,
+    ) -> Option<Self> {
         new!(song, samplerate, settings)
     }
 }
 
 impl<'sample> PlaybackState<'sample, false> {
-    /// None if the Song doesnt have any pattern in its OrderList
-    pub fn new(song: &'sample Song<false>, samplerate: u32, settings: PlaybackSettings) -> Option<Self> {
+    /// None if the settings in the order variant don't have any pattern to play
+    pub fn new(
+        song: &'sample Song<false>,
+        samplerate: u32,
+        settings: PlaybackSettings,
+    ) -> Option<Self> {
         new!(song, samplerate, settings)
     }
 }
@@ -121,13 +200,13 @@ pub struct PlaybackIter<'sample, 'song, 'playback, const INTERPOLATION: u8, cons
 }
 
 impl<const INTERPOLATION: u8, const GC: bool> PlaybackIter<'_, '_, '_, INTERPOLATION, GC> {
-    pub fn check_position(&self) -> ControlFlow<()> {
-        match self.song.get_order(self.state.position.order) {
-            PatternOrder::Number(_) => ControlFlow::Continue(()),
-            PatternOrder::EndOfSong => ControlFlow::Break(()),
-            PatternOrder::SkipOrder => ControlFlow::Continue(()),
-        }
-    }
+    // pub fn check_position(&self) -> ControlFlow<()> {
+    //     match self.song.get_order(self.state.position.order) {
+    //         PatternOrder::Number(_) => ControlFlow::Continue(()),
+    //         PatternOrder::EndOfSong => ControlFlow::Break(()),
+    //         PatternOrder::SkipOrder => ControlFlow::Continue(()),
+    //     }
+    // }
 
     pub fn frames_per_tick(&self) -> u32 {
         PlaybackState::<GC>::frames_per_tick(self.state.samplerate, self.song.initial_tempo)
@@ -135,7 +214,8 @@ impl<const INTERPOLATION: u8, const GC: bool> PlaybackIter<'_, '_, '_, INTERPOLA
 
     /// do everything needed for stepping except for putting the samples into the voices.
     /// on true that needs to be done otherwise not.
-    /// true also means that the PlaybackPosition has changed
+    /// true also means that the PlaybackPosition has changed.
+    /// Also sets state.is_done if needed
     fn step_generic(&mut self) -> bool {
         if self.state.frame > 0 {
             self.state.frame -= 1;
@@ -151,18 +231,13 @@ impl<const INTERPOLATION: u8, const GC: bool> PlaybackIter<'_, '_, '_, INTERPOLA
             self.state.tick = self.song.initial_speed;
         }
 
-        self.state.position.row += 1;
-        if self.state.position.row >= self.song.patterns[self.state.position.pattern].row_count() {
-            self.state.position.row = 0;
-            // next pattern
-            if let Some(pattern) = self.song.next_pattern(&mut self.state.position.order) {
-                self.state.position.pattern = usize::from(pattern)
-            } else {
-                return false;
+        match self.state.position.step_row(self.song) {
+            ControlFlow::Continue(_) => true,
+            ControlFlow::Break(_) => {
+                self.state.is_done = true;
+                false
             }
         }
-
-        true
     }
 
     pub fn get_position(&self) -> PlaybackPosition {
@@ -189,7 +264,7 @@ macro_rules! create_sample_players {
 /// same as above macro
 macro_rules! next {
     ($sel: ident) => {{
-        if $sel.check_position().is_break() {
+        if $sel.state.is_done {
             return None;
         }
 

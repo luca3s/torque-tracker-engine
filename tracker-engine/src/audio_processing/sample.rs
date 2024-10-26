@@ -1,8 +1,8 @@
 use std::ops::{ControlFlow, Deref};
 
 use crate::{
+    project::note_event::Note,
     sample::{SampleData, SampleMetaData, SampleRef},
-    song::note_event::Note,
 };
 
 use super::Frame;
@@ -15,11 +15,7 @@ pub enum Interpolation {
 
 impl From<u8> for Interpolation {
     fn from(value: u8) -> Self {
-        match value {
-            0 => Self::Nearest,
-            1 => Self::Linear,
-            _ => panic!(),
-        }
+        Self::from_u8(value)
     }
 }
 
@@ -32,11 +28,19 @@ impl Interpolation {
             Interpolation::Linear => todo!(),
         }
     }
+
+    pub const fn from_u8(value: u8) -> Self {
+        match value {
+            0 => Self::Nearest,
+            1 => Self::Linear,
+            _ => panic!(),
+        }
+    }
 }
 
 #[derive(Debug)]
 enum RealTimeEffectState {
-    PitchSlide
+    PitchSlide,
 }
 
 #[derive(Debug)]
@@ -51,6 +55,7 @@ pub struct SamplePlayer<'sample, const GC: bool> {
     // stored as fixed point data: usize + f32
     // f32 ranges 0..1
     position: (usize, f32),
+    is_done: bool,
 
     out_rate: u32,
     // how much the position is advanced for each output sample.
@@ -68,6 +73,7 @@ impl<'sample, const GC: bool> SamplePlayer<'sample, GC> {
             sample: sample.1,
             meta_data: sample.0,
             position: (SampleData::PAD_SIZE_EACH, 0.),
+            is_done: false,
             out_rate,
             step_size: Self::compute_step_size(
                 sample.0.sample_rate,
@@ -79,7 +85,11 @@ impl<'sample, const GC: bool> SamplePlayer<'sample, GC> {
         }
     }
 
-    pub fn check_position(&self) -> ControlFlow<()> {
+    pub fn is_done(&self) -> bool {
+        self.is_done
+    }
+
+    fn check_position(&self) -> ControlFlow<()> {
         if self.position.0 > self.sample.deref().len_with_pad() - SampleData::PAD_SIZE_EACH {
             ControlFlow::Break(())
         } else {
@@ -98,7 +108,8 @@ impl<'sample, const GC: bool> SamplePlayer<'sample, GC> {
         // Where each freq is computed with MIDI tuning standard formula: 440 * 2^((note - 69)/12)
         // manually reduced formula: 2^((play_note - sample_base_note)/12) * (outrate / inrate)
         // herbie (https://herbie.uwplse.org/demo/index.html) can't optimize further: https://herbie.uwplse.org/demo/e096ef89ee257ad611dd56378bd139a065a6bea0.02e7ec5a3709ad3e06968daa97db50d636f1e44b/graph.html
-        (f32::from(i16::from(playing_note.get()) - i16::from(sample_base_note.get())) / 12.).exp2() * (out_rate as f32 / in_rate as f32)
+        (f32::from(i16::from(playing_note.get()) - i16::from(sample_base_note.get())) / 12.).exp2()
+            * (out_rate as f32 / in_rate as f32)
     }
 
     fn set_step_size(&mut self) {
@@ -115,11 +126,17 @@ impl<'sample, const GC: bool> SamplePlayer<'sample, GC> {
         self.set_step_size();
     }
 
+    /// steps self and sets is_done if needed
     fn step(&mut self) {
         self.position.1 += self.step_size;
         let floor = self.position.1.trunc();
         self.position.1 -= floor;
         self.position.0 += floor as usize;
+
+        // check if end of sample was reached.
+        if self.position.0 > self.sample.deref().len_with_pad() - SampleData::PAD_SIZE_EACH {
+            self.is_done = true
+        }
     }
 
     #[inline]
@@ -131,14 +148,17 @@ impl<'sample, const GC: bool> SamplePlayer<'sample, GC> {
 
     #[inline]
     pub fn next<const INTERPOLATION: u8>(&mut self) -> Option<Frame> {
-        match Interpolation::from(INTERPOLATION) {
+        // const block allows turning an invalid u8 into compile time error
+        let interpolation = const { Interpolation::from_u8(INTERPOLATION) };
+
+        match interpolation {
             Interpolation::Nearest => self.next_nearest(),
             Interpolation::Linear => self.next_linear(),
         }
     }
 
     pub fn next_linear(&mut self) -> Option<Frame> {
-        if self.check_position().is_break() {
+        if self.is_done {
             return None;
         }
 
@@ -148,7 +168,8 @@ impl<'sample, const GC: bool> SamplePlayer<'sample, GC> {
                 Frame::from((diff * self.position.1) + mono[self.position.0])
             }
             SampleData::Stereo(stereo) => {
-                let diff = Frame::from(stereo[self.position.0 + 1]) - Frame::from(stereo[self.position.0]);
+                let diff =
+                    Frame::from(stereo[self.position.0 + 1]) - Frame::from(stereo[self.position.0]);
 
                 (diff * self.position.1) + Frame::from(stereo[self.position.0])
             }
@@ -159,7 +180,7 @@ impl<'sample, const GC: bool> SamplePlayer<'sample, GC> {
     }
 
     pub fn next_nearest(&mut self) -> Option<Frame> {
-        if self.check_position().is_break() {
+        if self.is_done {
             return None;
         }
 

@@ -1,13 +1,16 @@
-use crate::file::err::LoadDefect;
 use crate::file::err;
-use crate::song::event_command::NoteCommand;
-use crate::song::note_event::{Note, NoteEvent, VolumeEffect};
-use crate::song::pattern::{InPatternPosition, Pattern};
+use crate::file::err::LoadDefect;
+use crate::project::event_command::NoteCommand;
+use crate::project::note_event::{Note, NoteEvent, VolumeEffect};
+use crate::project::pattern::{InPatternPosition, Pattern};
 
 /// reader should be buffered in some way and not do a syscall on every read call.
-/// 
+///
 /// This function does a lot of read calls
-pub fn parse_pattern<R: std::io::Read + std::io::Seek, H: FnMut(LoadDefect)>(reader: &mut R, defect_handler: &mut H) -> Result<Pattern, err::LoadErr> {
+pub fn parse_pattern<R: std::io::Read + std::io::Seek, H: FnMut(LoadDefect)>(
+    reader: &mut R,
+    defect_handler: &mut H,
+) -> Result<Pattern, err::LoadErr> {
     const PATTERN_HEADER_SIZE: usize = 8;
 
     let read_start = reader.stream_position()?;
@@ -15,7 +18,10 @@ pub fn parse_pattern<R: std::io::Read + std::io::Seek, H: FnMut(LoadDefect)>(rea
     let (length, num_rows) = {
         let mut header = [0; PATTERN_HEADER_SIZE];
         reader.read_exact(&mut header)?;
-        (u64::from(u16::from_le_bytes([header[0], header[1]])) + PATTERN_HEADER_SIZE as u64, u16::from_le_bytes([header[2], header[3]]))
+        (
+            u64::from(u16::from_le_bytes([header[0], header[1]])) + PATTERN_HEADER_SIZE as u64,
+            u16::from_le_bytes([header[2], header[3]]),
+        )
     };
 
     // a guarantee given by the impulse tracker "specs"
@@ -37,7 +43,6 @@ pub fn parse_pattern<R: std::io::Read + std::io::Seek, H: FnMut(LoadDefect)>(rea
     let mut scratch = [0; 1];
 
     while row_num < num_rows && reader.stream_position()? - read_start < length {
-        
         let channel_variable = scratch[0];
 
         if channel_variable == 0 {
@@ -67,7 +72,7 @@ pub fn parse_pattern<R: std::io::Read + std::io::Seek, H: FnMut(LoadDefect)>(rea
                 Err(_) => {
                     defect_handler(LoadDefect::OutOfBoundsValue);
                     Note::default()
-                },
+                }
             };
 
             event.note = note;

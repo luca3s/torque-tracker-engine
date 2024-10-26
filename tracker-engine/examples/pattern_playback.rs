@@ -2,14 +2,15 @@ use std::{num::NonZeroU16, time::Duration};
 
 use cpal::{traits::DeviceTrait, Sample};
 use impulse_engine::{
-    manager::audio_manager::{AudioManager, AudioMsgConfig, OutputConfig, PlaybackSettings},
-    sample::{SampleData, SampleMetaData},
-    song::{
+    live_audio::ToWorkerMsg,
+    manager::{AudioManager, AudioMsgConfig, OutputConfig, PlaybackSettings},
+    project::{
         event_command::NoteCommand,
         note_event::{Note, NoteEvent, VolumeEffect},
         pattern::{InPatternPosition, PatternOperation},
         song::{Song, SongOperation},
     },
+    sample::{SampleData, SampleMetaData},
 };
 
 fn main() {
@@ -30,7 +31,8 @@ fn main() {
     };
 
     let mut song = manager.edit_song();
-    song.apply_operation(SongOperation::SetSample(0, meta, sample)).unwrap();
+    song.apply_operation(SongOperation::SetSample(0, meta, sample))
+        .unwrap();
     for i in 0..12 {
         let command = PatternOperation::SetEvent {
             position: InPatternPosition {
@@ -44,13 +46,17 @@ fn main() {
                 command: NoteCommand::None,
             },
         };
-        song.apply_operation(SongOperation::PatternOperation(0, command)).unwrap();
+        song.apply_operation(SongOperation::PatternOperation(0, command))
+            .unwrap();
     }
-    song.apply_operation(SongOperation::SetOrder(0, impulse_engine::file::impulse_format::header::PatternOrder::Number(0))).unwrap();
+    song.apply_operation(SongOperation::SetOrder(
+        0,
+        impulse_engine::file::impulse_format::header::PatternOrder::Number(0),
+    ))
+    .unwrap();
 
     song.finish();
     dbg!(manager.get_song());
-    // return;
 
     let default_device = AudioManager::default_device().unwrap();
     let default_config = default_device.default_output_config().unwrap();
@@ -74,7 +80,7 @@ fn main() {
         )
         .unwrap();
 
-    manager.play_song(PlaybackSettings::default());
+    manager.send_worker_msg(ToWorkerMsg::Playback(PlaybackSettings::default()));
 
     std::thread::sleep(Duration::from_secs(5));
     manager.deinit_audio();

@@ -101,7 +101,10 @@ pub struct ImpulseInstrument {
 impl ImpulseInstrument {
     const SIZE: usize = 554;
 
-    pub fn parse<H: FnMut(LoadDefect)>(buf: &[u8; Self::SIZE], defect_handler: &mut H) -> Result<Self, err::LoadErr> {
+    pub fn parse<H: FnMut(LoadDefect)>(
+        buf: &[u8; Self::SIZE],
+        defect_handler: &mut H,
+    ) -> Result<Self, err::LoadErr> {
         if !buf.starts_with(b"IMPI") {
             return Err(err::LoadErr::Invalid);
         }
@@ -193,11 +196,23 @@ impl ImpulseInstrument {
             .try_into()
             .unwrap();
 
-        let volume_envelope = ImpulseEnvelope::load(&buf[0x130..0x130+ImpulseEnvelope::SIZE].try_into().unwrap());
-        let pan_envelope = ImpulseEnvelope::load(&buf[0x182..0x182+ImpulseEnvelope::SIZE].try_into().unwrap());
-        let pitch_envelope = ImpulseEnvelope::load(&buf[0x1D4..0x1D4+ImpulseEnvelope::SIZE].try_into().unwrap());
+        let volume_envelope = ImpulseEnvelope::load(
+            &buf[0x130..0x130 + ImpulseEnvelope::SIZE]
+                .try_into()
+                .unwrap(),
+        );
+        let pan_envelope = ImpulseEnvelope::load(
+            &buf[0x182..0x182 + ImpulseEnvelope::SIZE]
+                .try_into()
+                .unwrap(),
+        );
+        let pitch_envelope = ImpulseEnvelope::load(
+            &buf[0x1D4..0x1D4 + ImpulseEnvelope::SIZE]
+                .try_into()
+                .unwrap(),
+        );
 
-        Ok(Self{
+        Ok(Self {
             dos_file_name,
             new_note_action,
             duplicate_check_type,
@@ -221,7 +236,6 @@ impl ImpulseInstrument {
             volume_envelope,
             pan_envelope,
             pitch_envelope,
-            
         })
     }
 }
@@ -252,7 +266,10 @@ impl ImpulseEnvelope {
 
         let nodes = array::from_fn(|idx| {
             let chunk = 6 + idx * 3;
-            (buf[chunk], u16::from_le_bytes([buf[chunk+1], buf[chunk+2]]))
+            (
+                buf[chunk],
+                u16::from_le_bytes([buf[chunk + 1], buf[chunk + 2]]),
+            )
         });
 
         Self {

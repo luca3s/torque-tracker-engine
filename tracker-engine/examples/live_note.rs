@@ -2,9 +2,14 @@ use std::{num::NonZeroU16, time::Duration};
 
 use cpal::{traits::DeviceTrait, Sample};
 use impulse_engine::{
-    manager::audio_manager::{AudioManager, AudioMsgConfig, OutputConfig},
+    live_audio::ToWorkerMsg,
+    manager::{AudioManager, AudioMsgConfig, OutputConfig},
+    project::{
+        event_command::NoteCommand,
+        note_event::{Note, NoteEvent, VolumeEffect},
+        song::{Song, SongOperation},
+    },
     sample::{SampleData, SampleMetaData},
-    song::{self, note_event::{Note, NoteEvent}, song::Song},
 };
 
 fn main() {
@@ -23,7 +28,10 @@ fn main() {
         ..Default::default()
     };
 
-    manager.edit_song().apply_operation(song::song::SongOperation::SetSample(1, meta, sample)).unwrap();
+    manager
+        .edit_song()
+        .apply_operation(SongOperation::SetSample(1, meta, sample))
+        .unwrap();
 
     let default_device = AudioManager::default_device().unwrap();
     let default_config = default_device.default_output_config().unwrap();
@@ -50,12 +58,12 @@ fn main() {
     let note_event = NoteEvent {
         note: Note::new(90).unwrap(),
         sample_instr: 1,
-        vol: song::note_event::VolumeEffect::None,
-        command: song::event_command::NoteCommand::None,
+        vol: VolumeEffect::None,
+        command: NoteCommand::None,
     };
-    manager.play_note(note_event);
+    manager.send_worker_msg(ToWorkerMsg::PlayEvent(note_event));
     std::thread::sleep(Duration::from_secs(1));
-    manager.play_note(note_event);
+    manager.send_worker_msg(ToWorkerMsg::PlayEvent(note_event));
     std::thread::sleep(Duration::from_secs(1));
     while let Ok(event) = recv.pop() {
         println!("{event:?}");

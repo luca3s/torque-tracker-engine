@@ -1,7 +1,7 @@
 use std::ops::{Index, IndexMut};
 
-use crate::song::note_event::NoteEvent;
-use crate::song::song::Song;
+use crate::project::note_event::NoteEvent;
+use crate::project::Song;
 
 /// both row and channel are zero based. If this ever changes a lot of the implementations of
 /// Pattern need to be changed, because the searching starts working differently
@@ -14,7 +14,7 @@ pub struct InPatternPosition {
 
 #[cfg(test)]
 mod test {
-    use crate::song::pattern::InPatternPosition;
+    use crate::project::pattern::InPatternPosition;
     #[test]
     fn position_ord() {
         let one_zero = InPatternPosition { row: 1, channel: 0 };
@@ -107,14 +107,15 @@ impl Pattern {
             PatternOperation::SetLength { new_len } => self.set_length(new_len),
             PatternOperation::SetEvent { position, event } => self.set_event(position, event),
             PatternOperation::RemoveEvent { position } => self.remove_event(position),
-            
         }
     }
 
     pub const fn operation_is_valid(&self, op: &PatternOperation) -> bool {
         match op {
             PatternOperation::SetLength { new_len } => *new_len < Self::MAX_ROWS,
-            PatternOperation::SetEvent { position, event: _ } => position.row < self.rows && position.channel as usize <= Song::<false>::MAX_CHANNELS,
+            PatternOperation::SetEvent { position, event: _ } => {
+                position.row < self.rows && position.channel as usize <= Song::<false>::MAX_CHANNELS
+            }
             PatternOperation::RemoveEvent { position: _ } => true,
         }
     }
@@ -129,7 +130,7 @@ impl Index<u16> for Pattern {
 
     /// # Out of Bounds
     /// Debug: Panic
-    /// 
+    ///
     /// Release: Empty slice
     fn index(&self, index: u16) -> &Self::Output {
         // only a debug assert because if out of bounds the output is simply empty

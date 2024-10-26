@@ -52,7 +52,7 @@ pub struct ImpulseHeader {
     pub orders: Box<[PatternOrder]>, // length is oder_num
 
     /// all Offsets are verified to be point outside the header.
-    /// 
+    ///
     /// Invalid offsets are replaced with None, so patterns or orders don't break, because the indexes change
     pub instr_offsets: Box<[Option<InFilePtr>]>,
     pub sample_offsets: Box<[Option<InFilePtr>]>,
@@ -65,11 +65,14 @@ impl ImpulseHeader {
     pub(crate) const BASE_SIZE: usize = 0xC0; // = 192
 
     /// Reader position needs to be at the beginning of the Header.
-    /// 
+    ///
     /// Header is stored at the beginning of the File. length isn't constant, but at least 192 bytes
     /// when unable to load specific parts the function tries its best and communicates the failures in the BitFlags return value.
     /// For some problems it wouldn't make sense to return an incomplete Header as so much would be missing. In those cases an Err is returned
-    pub fn parse<R: Read, H: FnMut(LoadDefect)>(reader: &mut R, defect_handler: &mut H) -> Result<Self, err::LoadErr> {
+    pub fn parse<R: Read, H: FnMut(LoadDefect)>(
+        reader: &mut R,
+        defect_handler: &mut H,
+    ) -> Result<Self, err::LoadErr> {
         let base = {
             let mut base = [0; Self::BASE_SIZE];
             reader.read_exact(&mut base)?;
@@ -77,7 +80,7 @@ impl ImpulseHeader {
         };
 
         // verify that the start matches
-        if !base.starts_with(b"IMPM")  {
+        if !base.starts_with(b"IMPM") {
             return Err(err::LoadErr::Invalid);
         }
 
@@ -149,62 +152,69 @@ impl ImpulseHeader {
         let orders: Box<[PatternOrder]> = {
             let mut data = vec![0; usize::from(order_num)].into_boxed_slice();
             reader.read_exact(&mut data)?;
-            data.iter().map(|order| match PatternOrder::try_from(*order) {
-                Ok(pat_order) => pat_order,
-                Err(_) => {
-                    defect_handler(LoadDefect::OutOfBoundsValue);
-                    PatternOrder::SkipOrder
-                }
-            })
-            .collect()
+            data.iter()
+                .map(|order| match PatternOrder::try_from(*order) {
+                    Ok(pat_order) => pat_order,
+                    Err(_) => {
+                        defect_handler(LoadDefect::OutOfBoundsValue);
+                        PatternOrder::SkipOrder
+                    }
+                })
+                .collect()
         };
 
         let instr_offsets = {
             let mut data = vec![0; usize::from(instr_num)].into_boxed_slice();
             reader.read_exact(&mut data)?;
-            data.chunks_exact(std::mem::size_of::<u32>()).map(|chunk| {
-                let value = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-                if value <= Self::BASE_SIZE as u32 {
-                    defect_handler(LoadDefect::OutOfBoundsPtr);
-                    None
-                } else {
-                    // value is larger than Self::BASE_SIZE, so also larger than 0
-                    Some(InFilePtr(NonZeroU32::new(value).unwrap()))
-                }
-            }).collect()
+            data.chunks_exact(std::mem::size_of::<u32>())
+                .map(|chunk| {
+                    let value = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                    if value <= Self::BASE_SIZE as u32 {
+                        defect_handler(LoadDefect::OutOfBoundsPtr);
+                        None
+                    } else {
+                        // value is larger than Self::BASE_SIZE, so also larger than 0
+                        Some(InFilePtr(NonZeroU32::new(value).unwrap()))
+                    }
+                })
+                .collect()
         };
 
         let sample_offsets = {
             let mut data = vec![0; usize::from(sample_num)].into_boxed_slice();
             reader.read_exact(&mut data)?;
-            data.chunks_exact(std::mem::size_of::<u32>()).map(|chunk| {
-                let value = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-                if value <= Self::BASE_SIZE as u32 {
-                    defect_handler(LoadDefect::OutOfBoundsPtr);
-                    None
-                } else {
-                    // value is larger than Self::BASE_SIZE, so also larger than 0
-                    Some(InFilePtr(NonZeroU32::new(value).unwrap()))
-                }
-            }).collect()
+            data.chunks_exact(std::mem::size_of::<u32>())
+                .map(|chunk| {
+                    let value = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                    if value <= Self::BASE_SIZE as u32 {
+                        defect_handler(LoadDefect::OutOfBoundsPtr);
+                        None
+                    } else {
+                        // value is larger than Self::BASE_SIZE, so also larger than 0
+                        Some(InFilePtr(NonZeroU32::new(value).unwrap()))
+                    }
+                })
+                .collect()
         };
 
         let pattern_offsets = {
             let mut data = vec![0; usize::from(pattern_num)].into_boxed_slice();
             reader.read_exact(&mut data)?;
-            data.chunks_exact(std::mem::size_of::<u32>()).map(|chunk| {
-                let value = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-                if value == 0 {
-                    // None is a valid value and assumed to be an empty pattern
-                    None
-                } else if value <= Self::BASE_SIZE as u32 {
-                    defect_handler(LoadDefect::OutOfBoundsPtr);
-                    None
-                } else {
-                    // value is larger than Self::BASE_SIZE, so also larger than 0
-                    Some(InFilePtr(NonZeroU32::new(value).unwrap()))
-                }
-            }).collect()
+            data.chunks_exact(std::mem::size_of::<u32>())
+                .map(|chunk| {
+                    let value = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                    if value == 0 {
+                        // None is a valid value and assumed to be an empty pattern
+                        None
+                    } else if value <= Self::BASE_SIZE as u32 {
+                        defect_handler(LoadDefect::OutOfBoundsPtr);
+                        None
+                    } else {
+                        // value is larger than Self::BASE_SIZE, so also larger than 0
+                        Some(InFilePtr(NonZeroU32::new(value).unwrap()))
+                    }
+                })
+                .collect()
         };
 
         Ok(Self {

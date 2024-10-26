@@ -21,17 +21,18 @@ mod tests {
     fn write_guard_drop() {
         let mut writer = Writer::new(0);
         let mut reader = writer.build_reader().unwrap();
+        let sleep = Duration::from_millis(5);
         assert_eq!(*reader.lock(), 0);
-        let mut write_lock = writer.lock();
+        let mut write_lock = writer.lock(sleep);
         assert_eq!(*write_lock.read(), 0);
         write_lock.apply_op(CounterAddOp(2));
         assert_eq!(*write_lock.read(), 2);
         drop(write_lock);
-        let write_lock = writer.lock();
+        let write_lock = writer.lock(sleep);
         assert_eq!(*write_lock.read(), 2);
         write_lock.swap();
         assert_eq!(*reader.lock(), 2);
-        assert_eq!(*writer.lock().read(), 2);
+        assert_eq!(*writer.lock(sleep).read(), 2);
     }
 
     #[test]
@@ -92,7 +93,9 @@ mod tests {
     fn block() {
         let mut writer = Writer::new(0);
         let mut reader = writer.build_reader().unwrap();
-        writer.lock().apply_op(CounterAddOp(2));
+        let sleep = Duration::from_millis(5);
+
+        writer.lock(sleep).apply_op(CounterAddOp(2));
         std::thread::spawn(move || {
             let lock = reader.lock();
             assert_eq!(*lock, 0);
@@ -101,9 +104,9 @@ mod tests {
             assert_eq!(*reader.lock(), 2);
         });
         std::thread::sleep(Duration::from_secs(1));
-        writer.lock().swap();
+        writer.lock(sleep).swap();
         // blocks until the spawned thread drops the read_lock
-        let write_lock = writer.lock();
+        let write_lock = writer.lock(sleep);
         assert_eq!(*write_lock.read(), 2);
     }
 

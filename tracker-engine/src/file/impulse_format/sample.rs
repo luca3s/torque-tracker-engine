@@ -1,6 +1,9 @@
 use std::num::NonZeroU32;
 
-use crate::file::{err::{LoadDefect, LoadErr}, InFilePtr};
+use crate::file::{
+    err::{LoadDefect, LoadErr},
+    InFilePtr,
+};
 
 use super::header;
 
@@ -160,7 +163,10 @@ pub struct ImpulseSampleHeader {
 impl ImpulseSampleHeader {
     const SIZE: usize = 80;
 
-    pub fn parse<H: FnMut(LoadDefect)>(buf: &[u8; Self::SIZE], defect_handler: &mut H) -> Result<Self, LoadErr> {
+    pub fn parse<H: FnMut(LoadDefect)>(
+        buf: &[u8; Self::SIZE],
+        defect_handler: &mut H,
+    ) -> Result<Self, LoadErr> {
         if !buf.starts_with(b"IMPS") {
             return Err(LoadErr::Invalid);
         }

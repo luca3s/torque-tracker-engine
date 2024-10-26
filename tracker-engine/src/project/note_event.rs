@@ -1,6 +1,9 @@
-use std::{error::Error, fmt::{Display, Write}};
+use std::{
+    error::Error,
+    fmt::{Display, Write},
+};
 
-use crate::song::event_command::NoteCommand;
+use crate::project::event_command::NoteCommand;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Note(u8);
@@ -32,7 +35,7 @@ impl Note {
             9 => "A",
             10 => "A#",
             11 => "B",
-            _ => panic!()
+            _ => panic!(),
         }
     }
 
