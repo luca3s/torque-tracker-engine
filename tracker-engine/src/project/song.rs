@@ -217,6 +217,21 @@ impl ValidOperation {
             Err(op)
         }
     }
+
+    pub(crate) fn drops_sample(&self, song: &Song<true>) -> bool {
+        if let Self::SetSample(idx, _, _) = self {
+            if song.samples[*idx].is_some() {
+                // a sample is replaced
+                true
+            } else {
+                // there is no sample at the place of the new sample, so no sample gets dropped
+                false
+            }
+        } else {
+            // the operation doesn't set a sample
+            false
+        }
+    }
 }
 
 impl Debug for ValidOperation {

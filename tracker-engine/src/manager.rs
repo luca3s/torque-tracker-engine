@@ -1,9 +1,9 @@
 use std::{
-    fmt::Debug,
-    mem::{transmute, ManuallyDrop},
-    num::{NonZero, NonZeroU16},
-    time::Duration,
+    fmt::Debug, mem::ManuallyDrop, num::NonZeroU16, time::Duration
 };
+
+#[cfg(feature = "async")]
+use std::ops::ControlFlow;
 
 use basedrop::{Collector, Handle};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -15,156 +15,119 @@ use crate::{
     project::song::{Song, SongOperation, ValidOperation},
 };
 
-/// blocks via crossbeam_utils
-#[inline]
-fn send_blocking(writer: &mut rtrb::Producer<ToWorkerMsg>, msg: ToWorkerMsg, sleep: Duration) {
-    let backoff = crossbeam_utils::Backoff::new();
-    loop {
-        if writer.push(msg).is_ok() {
-            return;
-        }
-
-        if backoff.is_completed() {
-            std::thread::sleep(sleep);
-        } else {
-            backoff.snooze();
-        }
-    }
-}
-
-#[inline]
-#[cfg(feature = "async")]
-async fn send_async(writer: &mut rtrb::Producer<ToWorkerMsg>, msg: ToWorkerMsg, sleep: Duration) {
-    let backoff = crossbeam_utils::Backoff::new();
-    loop {
-        if writer.push(msg).is_ok() {
-            return;
-        }
-
-        if backoff.is_completed() {
-            async_io::Timer::after(sleep).await;
-        } else {
-            backoff.snooze();
-        }
-    }
-}
-
-// #[cfg(feature = "async")]
-struct AllocsFreed(usize);
-
 /// If Async is enabled this allows putting the Collector into an Future and communicating with it
 enum ManageCollector {
-    Internal(ManuallyDrop<Collector>),
+    /// .1: dropped allocs, that will soon be available to free
+    Internal(ManuallyDrop<Collector>, usize),
     #[cfg(feature = "async")]
-    External(async_channel::Sender<AllocsFreed>, Handle),
+    External(async_channel::Sender<usize>, Handle),
 }
 
-#[cfg(not(feature = "async"))]
 impl ManageCollector {
     fn handle(&self) -> Handle {
-        let Self::Internal(ref collector) = self;
-        collector.handle()
+        match self {
+            ManageCollector::Internal(collector, _) => collector.handle(),
+            #[cfg(feature = "async")]
+            ManageCollector::External(_, handle) => handle.clone(),
+        }
     }
 
     fn collect(&mut self) {
-        let Self::Internal(ref mut collector) = self;
-        collector.collect();
+        #[allow(irrefutable_let_patterns)]
+        if let Self::Internal(ref mut collector, num) = self {
+            while collector.collect_one() {
+                *num -= 1;
+            }
+        }
     }
-}
 
-// #[cfg(feature = "async")]
-enum CollectorFutState {
-    ToCollect(NonZero<usize>),
+    fn increase_dropped(&mut self, frees: usize) {
+        match self {
+            ManageCollector::Internal(_, num) => *num += frees,
+            #[cfg(feature = "async")]
+            ManageCollector::External(channel, _) => {
+                _ = channel.send_blocking(frees);
+            },
+        }
+    }
+
+    #[cfg(feature = "async")]
+    async fn async_increase_dropped(&mut self, frees: usize) {
+        match self {
+            ManageCollector::Internal(_, num) => *num += frees,
+            ManageCollector::External(channel, _) => {
+                _ = channel.send(frees).await;
+            },
+        }
+    }
 }
 
 /// If this is dropped it will leak all current and future sample data.
-// #[cfg(feature = "async")]
-pub struct CollectorFut {
-    collector: Collector,
-    channel: async_channel::Receiver<AllocsFreed>,
-    recv: Option<async_channel::Recv<'static, AllocsFreed>>,
+/// To avoid this put it back inside the AudioManager
+/// Alternatively call `collect` until it returns `ControlFlow::Break`. Then dropping doesn't leak
+#[cfg(feature = "async")]
+pub struct CollectGarbage {
+    collector: ManuallyDrop<Collector>,
+    channel: Option<async_channel::Receiver<usize>>,
     /// allocs that the AudioManager has removed from the song.
     /// they will be added to the collector queue soon.
     to_be_freed: usize,
-    /// false if the AudioManager was dropped. Set to false after getting a disconnect Err from the channel once
-    more_allocs_possible: bool,
-    /// needed for recv, as it has a ref to channel
-    _pin: std::marker::PhantomPinned,
 }
 
-// #[cfg(feature = "async")]
-impl CollectorFut {
-    fn new(collector: Collector, channel: async_channel::Receiver<AllocsFreed>) -> Self {
+#[cfg(feature = "async")]
+impl CollectGarbage {
+    fn new(collector: ManuallyDrop<Collector>, channel: async_channel::Receiver<usize>, to_be_freed: usize) -> Self {
         Self {
             collector,
-            channel,
-            recv: None,
-            to_be_freed: 0,
-            // it was just created, so the manager is alive
-            more_allocs_possible: true,
-            _pin: std::marker::PhantomPinned,
+            channel: Some(channel),
+            to_be_freed,
         }
     }
-}
 
-// #[cfg(feature = "async")]
-impl std::future::Future for CollectorFut {
-    type Output = ();
+    /// return value indicates if this function needs to be called again to ensure memory cleanup.
+    /// can be called in a loop. async sleeps internally
+    pub async fn collect(&mut self) -> ControlFlow<()> {
+        use futures_lite::future;
 
-    fn poll(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
         // 44.100 Hz / 256 Frames in a buffer = 172 buffers per second.
         // => 5.8 ms for each buffer
-        const SLEEP: Duration = Duration::from_millis(6);
+        const SLEEP: Duration = Duration::from_millis(20);
 
-        use std::task::Poll;
-        use std::pin::Pin;
-        use futures_lite::future::FutureExt;
-
-        if self.as_ref().more_allocs_possible {
-            if self.as_ref().recv.is_none() {
-                // set self.recv
-                let recv = self.channel.recv();
-                // remove the lifetime.
-                // SAFETY: lifetime is bound to self.channel and the object is Pin and PhantomPinned
-                let recv = unsafe {
-                    transmute::<async_channel::Recv<'_, AllocsFreed>, async_channel::Recv<'static, AllocsFreed>>(recv)
-                };
-                // create a recv future
-                let mut this_recv = unsafe { self.as_mut().map_unchecked_mut(|this| &mut this.recv) };
-
-                this_recv.set(Some(recv));
-            }
-
-            // recv is Some now
-            // take a Pin<&mut> to that Some
-            let recv = unsafe { self.as_mut().map_unchecked_mut(|this| this.recv.as_mut().unwrap()) };
-            match recv.poll(cx) {
-                Poll::Ready(result) => {
-                    // poll is ready => Drop the Future
-                    recv.set(None);
-                    // get mut ref for Unpin editing
-                    let this = unsafe { Pin::into_inner_unchecked(self.as_mut()) };
-                    match result {
-                        Ok(allocs) => this.to_be_freed += allocs.0,
-                        Err(_) => {
-                            this.more_allocs_possible = false;
-                            this.to_be_freed = this.collector.alloc_count();
-                        }
+        async fn recv_channel(this: &mut CollectGarbage) {
+            if let Some(ref channel) = this.channel {
+                match channel.recv().await {
+                    Ok(msg) => this.to_be_freed += msg,
+                    Err(_) => {
+                        this.to_be_freed = this.collector.alloc_count();
+                        this.channel = None;
                     }
                 }
-                Poll::Pending => (),
             }
-        } else {
-            // nothing to do as no new info will come in
-            debug_assert!(self.collector.alloc_count() == self.to_be_freed);
         }
 
+        async fn sleep(sleep: Duration) {
+            async_io::Timer::after(sleep).await;
+        }
 
+        while self.collector.collect_one() {
+            self.to_be_freed -= 1;
+        }
 
-        Poll::Pending
+        if self.channel.is_some() {
+            if self.to_be_freed == 0 {
+                recv_channel(self).await;
+            } else {
+                future::race(sleep(SLEEP), recv_channel(self)).await;
+            }
+            ControlFlow::Continue(())
+        } else {
+            debug_assert_eq!(self.to_be_freed, self.collector.alloc_count());
+            if self.to_be_freed == 0 {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        }
     }
 }
 
@@ -186,7 +149,7 @@ impl AudioManager {
 
         Self {
             song: left_right,
-            gc: ManageCollector::Internal(gc),
+            gc: ManageCollector::Internal(gc, 0),
             stream: None,
         }
     }
@@ -203,18 +166,9 @@ impl AudioManager {
     ///
     /// Spinloops until no more ReadGuard to the old value exists
     pub fn edit_song(&mut self) -> SongEdit<'_> {
-        #[cfg(feature = "async")]
-        let handle = match &self.gc {
-            ManageCollector::Internal(collector) => collector.handle(),
-            ManageCollector::External(_, handle) => handle.clone(),
-        };
-
-        #[cfg(not(feature = "async"))]
-        let handle = self.gc.handle();
-
         SongEdit {
             song: self.song.lock(Self::SPIN_SLEEP),
-            gc_handle: handle,
+            gc: &mut self.gc
         }
     }
 
@@ -222,12 +176,9 @@ impl AudioManager {
         self.song.read()
     }
 
+    /// if the Gargage Collector was moved out, this does nothing
     pub fn collect_garbage(&mut self) {
-        // expect it due to async feature cfg
-        #[allow(irrefutable_let_patterns)]
-        if let ManageCollector::Internal(collector) = &mut self.gc {
-            collector.collect();
-        }
+        self.gc.collect();
     }
 
     /// If the config specifies more than two channels only the first two will be filled with audio.
@@ -282,14 +233,25 @@ impl AudioManager {
 
     pub fn send_worker_msg(&mut self, msg: ToWorkerMsg) {
         if let Some((_, channel)) = &mut self.stream {
-            send_blocking(channel, msg, Self::SPIN_SLEEP);
+            let backoff = crossbeam_utils::Backoff::new();
+            loop {
+                if channel.push(msg).is_ok() {
+                    return;
+                }
+
+                if backoff.is_completed() {
+                    std::thread::sleep(Self::SPIN_SLEEP);
+                } else {
+                    backoff.snooze();
+                }
+            }
         }
     }
 
     pub fn deinit_audio(&mut self) {
-        if let Some((stream, mut send)) = self.stream.take() {
-            send_blocking(&mut send, ToWorkerMsg::StopPlayback, Self::SPIN_SLEEP);
-            send_blocking(&mut send, ToWorkerMsg::StopLiveNote, Self::SPIN_SLEEP);
+        if let Some((stream, _)) = self.stream.take() {
+            self.send_worker_msg(ToWorkerMsg::StopPlayback);
+            self.send_worker_msg(ToWorkerMsg::StopLiveNote);
             drop(stream);
             #[cfg(not(feature = "async"))]
             self.gc.collect();
@@ -302,7 +264,18 @@ impl AudioManager {
 impl AudioManager {
     pub async fn async_send_worker_msg(&mut self, msg: ToWorkerMsg) {
         if let Some((_, channel)) = &mut self.stream {
-            send_async(channel, msg, Self::SPIN_SLEEP).await;
+            let backoff = crossbeam_utils::Backoff::new();
+            loop {
+                if channel.push(msg).is_ok() {
+                    return;
+                }
+
+                if backoff.is_completed() {
+                    async_io::Timer::after(Self::SPIN_SLEEP).await;
+                } else {
+                    backoff.snooze();
+                }
+            }
         }
     }
 
@@ -319,14 +292,36 @@ impl AudioManager {
     /// This allows using it inside async functin without blocking the runtime
     pub async fn async_edit_song(&mut self) -> SongEdit<'_> {
         let handle = match &self.gc {
-            ManageCollector::Internal(collector) => collector.handle(),
+            ManageCollector::Internal(collector, _) => collector.handle(),
             ManageCollector::External(_, handle) => handle.clone(),
         };
 
         SongEdit {
             song: self.song.async_lock(Self::SPIN_SLEEP).await,
-            gc_handle: handle,
+            gc: &mut self.gc
         }
+    }
+
+    /// returns None if the garbage collector is already external
+    pub fn get_garbage_collector(&mut self) -> Option<CollectGarbage> {
+        if let ManageCollector::Internal(ref mut collector, num) = self.gc {
+            let handle = collector.handle();
+            let (sender, recv) = async_channel::unbounded();
+            // SAFETY: Value is overwritten in the next line and not being read.
+            let collector = unsafe { ManuallyDrop::take(collector) };
+            self.gc = ManageCollector::External(sender, handle);
+
+            let external = CollectGarbage::new(ManuallyDrop::new(collector), recv, num);
+            Some(external)
+        } else {
+            None
+        }
+    }
+
+    /// makes the garbage collector internal again.
+    pub fn insert_garbage_collector(&mut self, gc: CollectGarbage) {
+        let CollectGarbage {collector, to_be_freed, channel: _} = gc;
+        self.gc = ManageCollector::Internal(collector, to_be_freed);
     }
 }
 
@@ -345,7 +340,7 @@ impl Drop for AudioManager {
         self.deinit_audio();
         // due to async feature
         #[allow(irrefutable_let_patterns)]
-        if let ManageCollector::Internal(ref mut collector) = self.gc {
+        if let ManageCollector::Internal(ref mut collector, _) = self.gc {
             let mut gc = unsafe { ManuallyDrop::take(collector) };
             gc.collect();
             if gc.try_cleanup().is_err() {
@@ -364,7 +359,8 @@ impl Drop for AudioManager {
 // need manuallyDrop because i need consume on drop behaviour
 pub struct SongEdit<'a> {
     song: WriteGuard<'a, Song<true>, ValidOperation>,
-    gc_handle: Handle,
+    // gc_handle: Handle,
+    gc: &'a mut ManageCollector,
 }
 
 impl Debug for SongEdit<'_> {
@@ -377,8 +373,11 @@ impl Debug for SongEdit<'_> {
 
 impl SongEdit<'_> {
     pub fn apply_operation(&mut self, op: SongOperation) -> Result<(), SongOperation> {
-        self.song
-            .apply_op(ValidOperation::new(op, &self.gc_handle, self.song())?);
+        let valid_operation = ValidOperation::new(op, &self.gc.handle(), self.song())?;
+        if valid_operation.drops_sample(self.song()) {
+            self.gc.increase_dropped(1);
+        }
+        self.song.apply_op(valid_operation);
         Ok(())
     }
 
