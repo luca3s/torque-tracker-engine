@@ -91,7 +91,7 @@ impl Sample<true> {
         }
     }
 
-    pub fn get_ref(&self) -> SampleRef<'static, true> {
+    pub(crate) fn get_ref(&self) -> SampleRef<'static, true> {
         let data = unsafe { self.gc.deref().clone() };
         SampleRef::<'static, true>::new(data)
     }
@@ -123,7 +123,7 @@ impl Sample<false> {
         unsafe { &self.owned }
     }
 
-    pub fn get_ref<'a>(&'a self) -> SampleRef<'a, false> {
+    pub(crate) fn get_ref<'a>(&'a self) -> SampleRef<'a, false> {
         SampleRef::<'a, false>::new(unsafe { &self.owned })
     }
 
@@ -133,7 +133,9 @@ impl Sample<false> {
         out
     }
 
-    pub fn to_gc(self, handle: &basedrop::Handle) -> Sample<true> {
+    // avoids copying the underlaying data. As soon as SampleData gets ?Sized this should change
+    #[expect(clippy::wrong_self_convention)]
+    pub(crate) fn to_gc(self, handle: &basedrop::Handle) -> Sample<true> {
         let data = self.take();
         let shared = basedrop::Shared::new(handle, data);
         Sample::<true>::new(shared)

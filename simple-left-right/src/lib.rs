@@ -21,22 +21,21 @@
     clippy::missing_safety_doc,
     clippy::undocumented_unsafe_blocks
 )]
-
 #![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate alloc;
 
 #[cfg(feature = "std")]
-use std::thread;
-#[cfg(feature = "std")]
 use core::time::Duration;
+#[cfg(feature = "std")]
+use std::thread;
 
 use core::{
-    hint::assert_unchecked,
+    cell::UnsafeCell,
     marker::PhantomData,
     mem::MaybeUninit,
     ops::Deref,
-    sync::atomic::{fence, AtomicU8, Ordering}
+    sync::atomic::{fence, AtomicU8, Ordering},
 };
 
 use alloc::{collections::vec_deque::VecDeque, sync::Arc};
@@ -105,27 +104,32 @@ impl<T> Reader<T> {
         // sets the corresponding read bit to the write ptr bit
         // happens as a single atomic operation so the 'double read' state isn't needed
         // ptr bit doesnt get changed
+        // always Ok, as the passed closure never returns None
         let update_result =
             self.inner
                 .state
                 .fetch_update(Ordering::Relaxed, Ordering::Acquire, |value| {
                     // SAFETY: At this point no Read bit is set, as creating a ReadGuard requires a &mut Reader and the Guard holds the &mut Reader
                     unsafe {
-                        assert_unchecked(value & 0b011 == 0);
-                    }
-                    match value.into() {
-                        Ptr::Value1 => Some(0b001),
-                        Ptr::Value2 => Some(0b110),
+                        match Ptr::from_u8_no_read(value) {
+                            Ptr::Value1 => Some(0b001),
+                            Ptr::Value2 => Some(0b110),
+                        }
                     }
                 });
 
-        // SAFETY: the passed clorusure always returns Some, so fetch_update never returns Err
-        let ptr = unsafe { update_result.unwrap_unchecked().into() };
+        // here the read ptr and read state of update_result match. maybe the atomic was already changed, but that doesn't matter.
+        // we continue working with the state that we set.
 
-        // SAFETY: the Writer always sets the Read bit to the opposite of its write_ptr
+        // SAFETY: the passed closure always returns Some, so fetch_update never returns Err
+        let ptr = unsafe {
+            // here it doesn't matter if we create the Ptr from the read bits or from the ptr bit, as they match
+            Ptr::from_u8_ignore_read(update_result.unwrap_unchecked())
+        };
+
+        // SAFETY: the Writer allowed the read on this value because the ptr bit was set. The read bit has been set
         let data = unsafe { self.inner.get_value(ptr).get().as_ref().unwrap_unchecked() };
 
-        // SAFETY: the read_state is set to the value that is being
         ReadGuard {
             data,
             state: &self.inner.state,
@@ -150,7 +154,6 @@ impl<T, O> WriteGuard<'_, T, O> {
     pub fn swap(self) {}
 
     /// Gets the value currently being written to.
-    #[must_use]
     pub fn read(&self) -> &T {
         self.writer.read()
     }
@@ -160,11 +163,15 @@ impl<T, O> WriteGuard<'_, T, O> {
     fn get_data_mut(&mut self) -> &mut T {
         // SAFETY: When creating the writeguad it is checked that the reader doesnt have access to the same data
         // This function requires &mut self so there also isn't any ref created by writeguard.
-        unsafe { self.get_data_ptr().as_mut().unwrap() }
-    }
-
-    fn get_data_ptr(&self) -> *mut T {
-        self.writer.shared.get_value(self.writer.write_ptr).get()
+        // SAFETY: the ptr is never null, therefore unwrap_unchecked
+        unsafe {
+            self.writer
+                .shared
+                .get_value(self.writer.write_ptr)
+                .get()
+                .as_mut()
+                .unwrap_unchecked()
+        }
     }
 }
 
@@ -264,7 +271,6 @@ impl<T: Absorb<O>, O> Writer<T, O> {
     /// Blocks if the Reader has a `ReadGuard` pointing to the old value.
     ///
     /// Uses a Spinlock because for anything else the OS needs to be involved and `Reader` can't talk to the OS.
-    #[cfg(not(feature = "std"))]
     pub fn lock(&mut self) -> WriteGuard<'_, T, O> {
         let backoff = crossbeam_utils::Backoff::new();
 
@@ -272,7 +278,10 @@ impl<T: Absorb<O>, O> Writer<T, O> {
             // operation has to be aquire, but only the time it breaks the loop
             let state = self.shared.state.load(Ordering::Relaxed);
 
-            if ReadState::from(state).can_write(self.write_ptr) {
+            // SAFETY: is in state internal only value which is only set by library code
+            let state = unsafe { ReadState::from_u8_ignore_ptr(state) };
+
+            if state.can_write(self.write_ptr) {
                 // make the load operation aquire only when it actually breaks the loop
                 // the important (last) load is aquire, while all loads before are relaxed
                 fence(Ordering::Acquire);
@@ -288,18 +297,21 @@ impl<T: Absorb<O>, O> Writer<T, O> {
     }
 
     /// Blocks if the Reader has a `ReadGuard` pointing to the old value.
-    /// 
+    ///
     /// Uses a spin-lock, because the `Reader` can't talk to the OS. Sleeping and Yielding is done to avoid wasting cycles.
     /// Equivalent to ´lock´, except that it starts sleeping the given duration after a certaint point until the lock could be aquired.
     #[cfg(feature = "std")]
-    pub fn lock(&mut self, sleep: Duration) -> WriteGuard<'_, T, O> {
+    pub fn sleep_lock(&mut self, sleep: Duration) -> WriteGuard<'_, T, O> {
         let backoff = crossbeam_utils::Backoff::new();
 
         loop {
             // operation has to be aquire, but only the time it breaks the loop
             let state = self.shared.state.load(Ordering::Relaxed);
 
-            if ReadState::from(state).can_write(self.write_ptr) {
+            // SAFETY: is in state internal only value which is only set by library code
+            let state = unsafe { ReadState::from_u8_ignore_ptr(state) };
+
+            if state.can_write(self.write_ptr) {
                 // make the load operation aquire, only when it actually breaks the loop
                 // the important (last) load is aquire, while all loads before are relaxed
                 fence(Ordering::Acquire);
@@ -328,7 +340,10 @@ impl<T: Absorb<O>, O> Writer<T, O> {
             // operation has to be aquire, but only the time it breaks the loop
             let state = self.shared.state.load(Ordering::Relaxed);
 
-            if ReadState::from(state).can_write(self.write_ptr) {
+            // SAFETY: is in state internal only value which is only set by library code
+            let state = unsafe { ReadState::from_u8_ignore_ptr(state) };
+
+            if state.can_write(self.write_ptr) {
                 // make the load operation aquire, only when it actually breaks the loop
                 // the important (last) load is aquire, while all loads before are relaxed
                 fence(Ordering::Acquire);
@@ -352,7 +367,10 @@ impl<T: Absorb<O>, O> Writer<T, O> {
     pub fn try_lock(&mut self) -> Option<WriteGuard<'_, T, O>> {
         let state = self.shared.state.load(Ordering::Acquire);
 
-        if ReadState::from(state).can_write(self.write_ptr) {
+        // SAFETY: is in state internal only value which is only set by library code
+        let state = unsafe { ReadState::from_u8_ignore_ptr(state) };
+
+        if state.can_write(self.write_ptr) {
             // SAFETY: ReadState allows this
             unsafe { Some(WriteGuard::new(self)) }
         } else {
@@ -371,8 +389,8 @@ impl<T: Clone, O> Writer<T, O> {
         let shared = unsafe {
             let shared_ptr = Arc::get_mut(&mut shared).unwrap_unchecked().as_mut_ptr();
             (&raw mut (*shared_ptr).state).write(AtomicU8::new(0b000));
-            (&raw mut (*shared_ptr).value_1).cast::<T>().write(value.clone());
-            (&raw mut (*shared_ptr).value_2).cast::<T>().write(value);
+            UnsafeCell::raw_get(&raw const (*shared_ptr).value_1).write(value.clone());
+            UnsafeCell::raw_get(&raw const (*shared_ptr).value_1).write(value);
             shared.assume_init()
         };
 
@@ -388,6 +406,8 @@ impl<T: Default, O> Default for Writer<T, O> {
     /// Creates a new Writer by calling `T::default()` twice to create the two values
     ///
     /// Default impl of T needs to give the same result every time. Not upholding this doens't lead to UB, but turns the library basically useless
+    ///
+    /// Could leak a T object if T::default() panics.
     fn default() -> Self {
         let mut shared: Arc<MaybeUninit<Shared<T>>> = Arc::new_uninit();
 
@@ -396,8 +416,8 @@ impl<T: Default, O> Default for Writer<T, O> {
         let shared = unsafe {
             let shared_ptr = Arc::get_mut(&mut shared).unwrap_unchecked().as_mut_ptr();
             (&raw mut (*shared_ptr).state).write(AtomicU8::new(0b000));
-            (&raw mut (*shared_ptr).value_1).cast::<T>().write(T::default());
-            (&raw mut (*shared_ptr).value_2).cast::<T>().write(T::default());
+            UnsafeCell::raw_get(&raw const (*shared_ptr).value_1).write(T::default());
+            UnsafeCell::raw_get(&raw const (*shared_ptr).value_1).write(T::default());
             shared.assume_init()
         };
 

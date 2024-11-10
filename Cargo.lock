@@ -359,6 +359,7 @@ dependencies = [
  "basedrop",
  "cpal",
  "crossbeam-utils",
+ "futures-io",
  "futures-lite",
  "hound",
  "rtrb",

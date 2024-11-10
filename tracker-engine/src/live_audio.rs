@@ -180,10 +180,13 @@ impl LiveAudio {
         }
     }
 
+    // unsure wether i want to use this or untyped_callback
+    // also relevant when cpal gets made into a generic that maybe this gets useful
+    #[expect(dead_code)]
     pub fn get_typed_callback<S: cpal::SizedSample + cpal::FromSample<f32>>(
         mut self,
     ) -> impl FnMut(&mut [S], &cpal::OutputCallbackInfo) {
-        move |data, info| {
+        move |data, _info| {
             assert_eq!(
                 data.len(),
                 usize::try_from(self.config.buffer_size).unwrap()
@@ -197,6 +200,9 @@ impl LiveAudio {
     }
 }
 
+// only used for testing
+// if not testing is unused
+#[allow(dead_code)]
 fn sine(output: &mut [[f32; 2]], sample_rate: f32) {
     let mut sample_clock = 0f32;
     for frame in output {

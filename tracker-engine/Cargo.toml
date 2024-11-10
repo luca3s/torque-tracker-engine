@@ -12,12 +12,13 @@ keywords = ["audio"]
 categories = ["audio"]
 
 [features]
-async = ["dep:async-io", "dep:futures-lite", "dep:async-channel", "simple-left-right/async"]
+async = ["dep:async-io", "dep:futures-lite", "dep:async-channel", "dep:futures-io", "simple-left-right/async"]
 
 [dependencies]
 async-io = { version = "2.3.4", optional = true }
 futures-lite = { version = "2.3.0", optional = true }
 async-channel = { version = "2.3.1", optional = true }
+futures-io = { version = "0.3.31", optional = true }
 # added a couple features to it. pull requests don' really progress
 basedrop = "0.1.2" # miri reports Race Condition. Wait for fix or pull inside
 cpal = "0.15.3"

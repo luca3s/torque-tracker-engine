@@ -167,7 +167,7 @@ impl AudioManager {
     /// Spinloops until no more ReadGuard to the old value exists
     pub fn edit_song(&mut self) -> SongEdit<'_> {
         SongEdit {
-            song: self.song.lock(Self::SPIN_SLEEP),
+            song: self.song.sleep_lock(Self::SPIN_SLEEP),
             gc: &mut self.gc
         }
     }

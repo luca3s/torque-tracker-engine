@@ -101,6 +101,8 @@ impl<const GC: bool> Song<GC> {
 }
 
 impl Song<false> {
+    // to avoid cloning patterns
+    #[expect(clippy::wrong_self_convention)]
     pub(crate) fn to_gc(self, handle: &basedrop::Handle) -> Song<true> {
         Song {
             global_volume: self.global_volume,
@@ -135,7 +137,7 @@ impl Song<true> {
             initial_tempo: self.initial_tempo,
             pan_separation: self.pan_separation,
             pitch_wheel_depth: self.pitch_wheel_depth,
-            patterns: self.patterns.clone(),
+            patterns: self.patterns,
             pattern_order: self.pattern_order,
             volume: self.volume,
             pan: self.pan,
