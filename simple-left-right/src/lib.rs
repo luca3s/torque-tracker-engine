@@ -31,14 +31,10 @@ use core::time::Duration;
 use std::thread;
 
 use core::{
-    cell::UnsafeCell,
-    marker::PhantomData,
-    mem::MaybeUninit,
-    ops::Deref,
-    sync::atomic::{fence, AtomicU8, Ordering},
+    cell::UnsafeCell, marker::PhantomData, mem::MaybeUninit, ops::Deref, ptr::NonNull, sync::atomic::{fence, AtomicU8, Ordering}
 };
 
-use alloc::{collections::vec_deque::VecDeque, sync::Arc};
+use alloc::{collections::vec_deque::VecDeque, boxed::Box};
 
 mod inner;
 
@@ -50,19 +46,93 @@ pub trait Absorb<O> {
     fn absorb(&mut self, operation: O);
 }
 
+/// Dropping the Reader isn't realtime safe, because if dropped after the Writer, it deallocates.
+/// Should only get dropped, when closing the real-time thread
+///
+/// Reader will be able to read data even if Writer has been dropped. Obviously that data won't change anymore
+/// When there is no Reader the Writer is able to create a new one. The other way around doesn't work.
+///
+/// Isn't Sync as there is no methos that takes &self, so it is useless anyways.
+#[derive(Debug)]
+pub struct Reader<T> {
+    shared: NonNull<Shared<T>>,
+    /// for drop check
+    _own: PhantomData<Shared<T>>,
+}
+
+impl<T> Reader<T> {
+    const fn shared_ref(&self) -> &Shared<T> {
+        // SAFETY: Reader always has a valid Shared<T>, a mut ref to a shared is never created,
+        // only to the UnsafeCell<T>s inside of it
+        unsafe { self.shared.as_ref() }
+    }
+
+    /// this function never blocks. (`fetch_update` loop doesn't count)
+    pub fn lock(&mut self) -> ReadGuard<'_, T> {
+        let inner_ref = self.shared_ref();
+        // sets the corresponding read bit to the write ptr bit
+        // happens as a single atomic operation so the 'double read' state isn't needed
+        // ptr bit doesnt get changed
+        // always Ok, as the passed closure never returns None
+        let update_result =
+            inner_ref
+                .state
+                .fetch_update(Ordering::Relaxed, Ordering::Acquire, |value| {
+                    // SAFETY: At this point no Read bit is set, as creating a ReadGuard requires a &mut Reader and the Guard holds the &mut Reader
+                    unsafe {
+                        match Ptr::from_u8_no_read(value) {
+                            Ptr::Value1 => Some(0b001),
+                            Ptr::Value2 => Some(0b110),
+                        }
+                    }
+                });
+
+        // here the read ptr and read state of update_result match. maybe the atomic was already changed, but that doesn't matter.
+        // we continue working with the state that we set.
+
+        // SAFETY: the passed closure always returns Some, so fetch_update never returns Err
+        let ptr = unsafe { Ptr::from_u8_no_read(update_result.unwrap_unchecked()) };
+
+        // SAFETY: the Writer allowed the read on this value because the ptr bit was set. The read bit has been set
+        let data = unsafe { inner_ref.get_value(ptr).get().as_ref().unwrap_unchecked() };
+
+        ReadGuard {
+            data,
+            state: &inner_ref.state,
+            reader: PhantomData,
+        }
+    }
+}
+
+/// SAFETY: Owns a T
+unsafe impl<T: Send> Send for Reader<T> {}
+
+impl<T> Drop for Reader<T> {
+    fn drop(&mut self) {
+        // SAFETY: Shared.should_drop() is called. on true object really is dropped. on false it isnt.
+        // This is the last use of self and therefore also of Shared
+        unsafe {
+            let should_drop = self.shared_ref().should_drop();
+            if should_drop {
+                _ = Box::from_raw(self.shared.as_ptr());
+            }
+        }
+    }
+}
+
 /// Data won't change while holding the Guard. This also means the Writer can only issue one swap, while Guard is being held
+/// If T: !Sync this is guaranteed to be the only ref to this T
+///
+/// Doesn't implement Clone as that would require refcounting to know when to unlock.
 #[derive(Debug)]
 pub struct ReadGuard<'a, T> {
     data: &'a T,
     state: &'a AtomicU8,
-    // PhantomData makes the borrow checker prove that there only ever is one ReadGuard
-    //
-    // This is needed because setting the ReadState can only be reset when no ReadGuard exists
-    // and that would mean some kind of counter
+    /// PhantomData makes the borrow checker prove that there only ever is one ReadGuard.
+    /// This allows resetting the readstate without some kind of counter
     reader: PhantomData<&'a mut Reader<T>>,
 }
 
-// only struct that should have this impl, as it doesn't have any methods
 impl<'a, T> Deref for ReadGuard<'a, T> {
     type Target = T;
 
@@ -81,6 +151,11 @@ where
     }
 }
 
+/// SAFETY: behaves like a ref to T. https://doc.rust-lang.org/std/marker/trait.Sync.html
+unsafe impl<T: Sync> Send for ReadGuard<'_, T> {}
+/// SAFETY: behaves like a ref to T. https://doc.rust-lang.org/std/marker/trait.Sync.html
+unsafe impl<T: Sync> Sync for ReadGuard<'_, T> {}
+
 impl<T> Drop for ReadGuard<'_, T> {
     fn drop(&mut self) {
         // release the read lock
@@ -88,152 +163,36 @@ impl<T> Drop for ReadGuard<'_, T> {
     }
 }
 
-/// Dropping the Reader isn't realtime safe, because if dropped after the Writer, it deallocates.
-/// Should only get dropped, when closing the real-time thread
-///
-/// Reader will be able to read data even if Writer has been dropped. Obviously that data won't change anymore
-/// When there is no Reader the Writer is able to create a new one. The other way around doesn't work
-#[derive(Debug)]
-pub struct Reader<T> {
-    inner: Arc<Shared<T>>,
-}
-
-impl<T> Reader<T> {
-    /// this function never blocks. (`fetch_update` loop doesn't count)
-    pub fn lock(&mut self) -> ReadGuard<'_, T> {
-        // sets the corresponding read bit to the write ptr bit
-        // happens as a single atomic operation so the 'double read' state isn't needed
-        // ptr bit doesnt get changed
-        // always Ok, as the passed closure never returns None
-        let update_result =
-            self.inner
-                .state
-                .fetch_update(Ordering::Relaxed, Ordering::Acquire, |value| {
-                    // SAFETY: At this point no Read bit is set, as creating a ReadGuard requires a &mut Reader and the Guard holds the &mut Reader
-                    unsafe {
-                        match Ptr::from_u8_no_read(value) {
-                            Ptr::Value1 => Some(0b001),
-                            Ptr::Value2 => Some(0b110),
-                        }
-                    }
-                });
-
-        // here the read ptr and read state of update_result match. maybe the atomic was already changed, but that doesn't matter.
-        // we continue working with the state that we set.
-
-        // SAFETY: the passed closure always returns Some, so fetch_update never returns Err
-        let ptr = unsafe {
-            // here it doesn't matter if we create the Ptr from the read bits or from the ptr bit, as they match
-            Ptr::from_u8_ignore_read(update_result.unwrap_unchecked())
-        };
-
-        // SAFETY: the Writer allowed the read on this value because the ptr bit was set. The read bit has been set
-        let data = unsafe { self.inner.get_value(ptr).get().as_ref().unwrap_unchecked() };
-
-        ReadGuard {
-            data,
-            state: &self.inner.state,
-            reader: PhantomData,
-        }
-    }
-}
-
-// Don't ever create a WriteGuard directly
-/// Can be used to write to the Data structure.
-///
-/// When this structure exists the Reader already switched to the other value
-///
-/// Dropping this makes all changes available to the Reader
-#[derive(Debug)]
-pub struct WriteGuard<'a, T, O> {
-    writer: &'a mut Writer<T, O>,
-}
-
-impl<T, O> WriteGuard<'_, T, O> {
-    /// Makes the changes available to the reader.
-    pub fn swap(self) {}
-
-    /// Gets the value currently being written to.
-    pub fn read(&self) -> &T {
-        self.writer.read()
-    }
-
-    /// Isn't public as this could easily create disconnects between the two versions.
-    /// While that wouldn't lead to UB it goes against the purpose of this library
-    fn get_data_mut(&mut self) -> &mut T {
-        // SAFETY: When creating the writeguad it is checked that the reader doesnt have access to the same data
-        // This function requires &mut self so there also isn't any ref created by writeguard.
-        // SAFETY: the ptr is never null, therefore unwrap_unchecked
-        unsafe {
-            self.writer
-                .shared
-                .get_value(self.writer.write_ptr)
-                .get()
-                .as_mut()
-                .unwrap_unchecked()
-        }
-    }
-}
-
-impl<'a, T: Absorb<O>, O> WriteGuard<'a, T, O> {
-    /// created a new `WriteGuard` and syncs the two values if needed.
-    ///
-    /// ### SAFETY
-    /// No `ReadGuard` is allowed to exist to the same value the `Writer.write_ptr` points to
-    ///
-    /// Assuming a correct `Reader` & `ReadGuard` implementation:
-    /// If Inner.read_state.can_write(Writer.write_ptr) == true this function is fine to call
-    unsafe fn new(writer: &'a mut Writer<T, O>) -> Self {
-        let mut guard = Self { writer };
-        while let Some(operation) = guard.writer.op_buffer.pop_front() {
-            guard.get_data_mut().absorb(operation);
-        }
-        guard
-    }
-}
-
-impl<T: Absorb<O>, O: Clone> WriteGuard<'_, T, O> {
-    /// applies operation to the current write Value and stores it to apply to the other later.
-    /// If there is no reader the operation is applied to both values immediately and not stored.
-    pub fn apply_op(&mut self, operation: O) {
-        if let Some(inner) = Arc::get_mut(&mut self.writer.shared) {
-            inner.value_1.get_mut().absorb(operation.clone());
-            inner.value_2.get_mut().absorb(operation);
-        } else {
-            self.writer.op_buffer.push_back(operation.clone());
-            self.get_data_mut().absorb(operation);
-        }
-    }
-}
-
-impl<T, O> Drop for WriteGuard<'_, T, O> {
-    fn drop(&mut self) {
-        self.writer.swap();
-    }
-}
-
-/// Not realtime safe Object which can change the internal T value
+/// Not realtime safe object which can change the internal T value.
 #[derive(Debug)]
 pub struct Writer<T, O> {
-    shared: Arc<Shared<T>>,
+    shared: NonNull<Shared<T>>,
     // sets which buffer the next write is applied to
     // write_ptr doesn't need to be Atomics as it only changes, when the Writer itself swaps
     write_ptr: Ptr,
     // buffer is pushed at the back and popped at the front.
     op_buffer: VecDeque<O>,
+    // needed for drop_check
+    _own: PhantomData<Shared<T>>,
 }
 
 impl<T, O> Writer<T, O> {
+    const fn shared_ref(&self) -> &Shared<T> {
+        // SAFETY: Reader always has a valid Shared<T>, a mut ref to a shared is never created,
+        // only to the UnsafeCell<T>s inside of it
+        unsafe { self.shared.as_ref() }
+    }
+
     /// swaps the read and write values. If no changes were made since the last swap nothing happens. Never blocks
-    /// not public as swapping without creating a `WriteGuard` is pretty
+    /// not public as swapping without creating a before `WriteGuard` is pretty useless
     fn swap(&mut self) {
         if self.op_buffer.is_empty() {
             return;
         }
 
         match self.write_ptr {
-            Ptr::Value1 => self.shared.state.fetch_and(0b011, Ordering::Release),
-            Ptr::Value2 => self.shared.state.fetch_or(0b100, Ordering::Release),
+            Ptr::Value1 => self.shared_ref().state.fetch_and(0b011, Ordering::Release),
+            Ptr::Value2 => self.shared_ref().state.fetch_or(0b100, Ordering::Release),
         };
 
         self.write_ptr.switch();
@@ -241,28 +200,16 @@ impl<T, O> Writer<T, O> {
 
     /// get a Reader if none exists
     pub fn build_reader(&mut self) -> Option<Reader<T>> {
-        if Arc::get_mut(&mut self.shared).is_some() {
-            Some(Reader {
-                inner: self.shared.clone(),
-            })
-        } else {
-            None
-        }
-    }
-
-    /// The Value returned may be newer than the version the reader is currently seeing.
-    /// This value will be written to next.
-    #[must_use]
-    pub fn read(&self) -> &T {
-        // SAFETY: Only the WriteGuard can write to the values / create mut refs to them.
-        // The WriteGuard holds a mut ref to the writer so this function can't be called while a writeguard exists
-        // This means that reading them / creating refs is safe to do
+        // SAFETY: all is_unique_with_increase requirements are satisfied.
         unsafe {
-            self.shared
-                .get_value(self.write_ptr)
-                .get()
-                .as_ref()
-                .unwrap_unchecked()
+            if self.shared_ref().is_unique_with_increase() {
+                Some(Reader {
+                    shared: self.shared,
+                    _own: PhantomData,
+                })
+            } else {
+                None
+            }
         }
     }
 }
@@ -276,7 +223,7 @@ impl<T: Absorb<O>, O> Writer<T, O> {
 
         loop {
             // operation has to be aquire, but only the time it breaks the loop
-            let state = self.shared.state.load(Ordering::Relaxed);
+            let state = self.shared_ref().state.load(Ordering::Relaxed);
 
             // SAFETY: is in state internal only value which is only set by library code
             let state = unsafe { ReadState::from_u8_ignore_ptr(state) };
@@ -306,7 +253,7 @@ impl<T: Absorb<O>, O> Writer<T, O> {
 
         loop {
             // operation has to be aquire, but only the time it breaks the loop
-            let state = self.shared.state.load(Ordering::Relaxed);
+            let state = self.shared_ref().state.load(Ordering::Relaxed);
 
             // SAFETY: is in state internal only value which is only set by library code
             let state = unsafe { ReadState::from_u8_ignore_ptr(state) };
@@ -338,7 +285,7 @@ impl<T: Absorb<O>, O> Writer<T, O> {
 
         loop {
             // operation has to be aquire, but only the time it breaks the loop
-            let state = self.shared.state.load(Ordering::Relaxed);
+            let state = self.shared_ref().state.load(Ordering::Relaxed);
 
             // SAFETY: is in state internal only value which is only set by library code
             let state = unsafe { ReadState::from_u8_ignore_ptr(state) };
@@ -365,7 +312,7 @@ impl<T: Absorb<O>, O> Writer<T, O> {
 
     /// doesn't block. Returns None if the Reader has a `ReadGuard` pointing to the old value
     pub fn try_lock(&mut self) -> Option<WriteGuard<'_, T, O>> {
-        let state = self.shared.state.load(Ordering::Acquire);
+        let state = self.shared_ref().state.load(Ordering::Acquire);
 
         // SAFETY: is in state internal only value which is only set by library code
         let state = unsafe { ReadState::from_u8_ignore_ptr(state) };
@@ -382,22 +329,24 @@ impl<T: Absorb<O>, O> Writer<T, O> {
 impl<T: Clone, O> Writer<T, O> {
     /// Creates a new Writer by cloning the value once to get two values
     pub fn new(value: T) -> Self {
-        let mut shared: Arc<MaybeUninit<Shared<T>>> = Arc::new_uninit();
+        // SAFETY: ptr was just alloced, so is valid and unique.
+        let mut shared: Box<MaybeUninit<Shared<T>>> = Box::new_uninit();
+        Shared::initialize_state(&mut shared);
+        let shared_ptr = shared.as_mut_ptr();
 
-        // SAFETY: Arc was just created, therefore no one has acces to it.
-        // Every field gets initialized
+        // SAFETY: Every field gets initialized, ptr is valid and doesn't alias
         let shared = unsafe {
-            let shared_ptr = Arc::get_mut(&mut shared).unwrap_unchecked().as_mut_ptr();
-            (&raw mut (*shared_ptr).state).write(AtomicU8::new(0b000));
             UnsafeCell::raw_get(&raw const (*shared_ptr).value_1).write(value.clone());
-            UnsafeCell::raw_get(&raw const (*shared_ptr).value_1).write(value);
-            shared.assume_init()
+            UnsafeCell::raw_get(&raw const (*shared_ptr).value_2).write(value);
+            // consumes the Box<MaybeUninit> and creates the NonNull with an initialized value
+            NonNull::new_unchecked(Box::into_raw(shared.assume_init()))
         };
 
         Writer {
             shared,
             write_ptr: Ptr::Value2,
             op_buffer: VecDeque::new(),
+            _own: PhantomData,
         }
     }
 }
@@ -409,22 +358,154 @@ impl<T: Default, O> Default for Writer<T, O> {
     ///
     /// Could leak a T object if T::default() panics.
     fn default() -> Self {
-        let mut shared: Arc<MaybeUninit<Shared<T>>> = Arc::new_uninit();
+        // SAFETY: ptr was just alloced, so is valid and unique.
+        let mut shared: Box<MaybeUninit<Shared<T>>> = Box::new_uninit();
+        Shared::initialize_state(&mut shared);
+        let shared_ptr = shared.as_mut_ptr();
 
-        // SAFETY: Arc was just created, therefore no one has acces to it.
-        // Every field gets initialized
+        // SAFETY: Every field gets initialized, ptr is valid and doesn't alias
         let shared = unsafe {
-            let shared_ptr = Arc::get_mut(&mut shared).unwrap_unchecked().as_mut_ptr();
-            (&raw mut (*shared_ptr).state).write(AtomicU8::new(0b000));
             UnsafeCell::raw_get(&raw const (*shared_ptr).value_1).write(T::default());
-            UnsafeCell::raw_get(&raw const (*shared_ptr).value_1).write(T::default());
-            shared.assume_init()
+            UnsafeCell::raw_get(&raw const (*shared_ptr).value_2).write(T::default());
+            // consumes the Box<MaybeUninit> and creates the NonNull with an initialized value
+            NonNull::new_unchecked(Box::into_raw(shared.assume_init()))
         };
 
         Writer {
             shared,
             write_ptr: Ptr::Value2,
             op_buffer: VecDeque::new(),
+            _own: PhantomData,
         }
+    }
+}
+
+impl<T: Sync, O> Writer<T, O> {
+    /// The Value returned may be newer than the version the reader is currently seeing.
+    /// This value will be written to next.
+    ///
+    /// Needs T: Sync because maybe this is the value the reader is curently reading
+    pub fn read(&self) -> &T {
+        // SAFETY: Only the WriteGuard can write to the values / create mut refs to them.
+        // The WriteGuard holds a mut ref to the writer so this function can't be called while a writeguard exists
+        // This means that reading them / creating refs is safe to do
+        unsafe {
+            self.shared_ref()
+                .get_value(self.write_ptr)
+                .get()
+                .as_ref()
+                .unwrap_unchecked()
+        }
+    }
+}
+
+/// SAFETY: owns T and O
+unsafe impl<T: Send, O: Send> Send for Writer<T, O> {}
+/// SAFETY: &self fn can only create a &T and doesn't allow access to O
+unsafe impl<T: Sync, O> Sync for Writer<T, O> {}
+
+impl<T, O> Drop for Writer<T, O> {
+    fn drop(&mut self) {
+        // SAFETY: Shared.should_drop() is called. on true object really is dropped. on false it isnt.
+        // This is the last use of self and therefore also of Shared
+        unsafe {
+            let should_drop = self.shared_ref().should_drop();
+            if should_drop {
+                _ = Box::from_raw(self.shared.as_ptr());
+            }
+        }
+    }
+}
+
+// Don't create a WriteGuard directly, as that wouldn't sync with old Operations
+/// Can be used to write to the Data structure.
+///
+/// When this structure exists the Reader already switched to the other value
+///
+/// Dropping this makes all changes available to the Reader.
+#[derive(Debug)]
+pub struct WriteGuard<'a, T, O> {
+    writer: &'a mut Writer<T, O>,
+}
+
+impl<T, O> WriteGuard<'_, T, O> {
+    /// Makes the changes available to the reader. Equivalent to std::mem::drop(self)
+    pub fn swap(self) {}
+
+    /// Gets the value currently being written to.
+    pub fn read(&self) -> &T {
+        // SAFETY: Only the WriteGuard can write to the values / create mut refs to them.
+        // The WriteGuard holds a mut ref to the writer so this function can't be called while a writeguard exists
+        // This means that reading them / creating refs is safe to do
+        unsafe {
+            self.writer.shared_ref()
+                .get_value(self.writer.write_ptr)
+                .get()
+                .as_ref()
+                .unwrap_unchecked()
+        }
+    }
+
+    /// Isn't public as this could easily create disconnects between the two versions.
+    /// While that wouldn't lead to UB it goes against the purpose of this library
+    fn get_data_mut(&mut self) -> &mut T {
+        // SAFETY: When creating the writeguad it is checked that the reader doesnt have access to the same data
+        // This function requires &mut self so there also isn't any ref created by writeguard.
+        // SAFETY: the ptr is never null, therefore unwrap_unchecked
+        unsafe {
+            self.writer
+                .shared_ref()
+                .get_value(self.writer.write_ptr)
+                .get()
+                .as_mut()
+                .unwrap_unchecked()
+        }
+    }
+}
+
+impl<'a, T: Absorb<O>, O> WriteGuard<'a, T, O> {
+    /// created a new `WriteGuard` and syncs the two values if needed.
+    ///
+    /// ### SAFETY
+    /// No `ReadGuard` is allowed to exist to the same value the `Writer.write_ptr` points to
+    ///
+    /// Assuming a correct `Reader` & `ReadGuard` implementation:
+    /// If Inner.read_state.can_write(Writer.write_ptr) == true this function is fine to call
+    unsafe fn new(writer: &'a mut Writer<T, O>) -> Self {
+        let mut guard = Self { writer };
+        while let Some(operation) = guard.writer.op_buffer.pop_front() {
+            guard.get_data_mut().absorb(operation);
+        }
+        guard
+    }
+}
+
+impl<T: Absorb<O>, O: Clone> WriteGuard<'_, T, O> {
+    /// applies operation to the current write Value and stores it to apply to the other later.
+    /// If there is no reader the operation is applied to both values immediately and not stored.
+    pub fn apply_op(&mut self, operation: O) {
+        if self.writer.shared_ref().is_unique() {
+            let shared_ref = self.writer.shared_ref();
+            // SAFETY: is_unique checked that no Reader exists. I am the only one with access to Shared<T>, so i can modify whatever i want.
+            unsafe {
+                (*shared_ref.value_1.get()).absorb(operation.clone());
+                (*shared_ref.value_2.get()).absorb(operation);
+            }
+        } else {
+            self.writer.op_buffer.push_back(operation.clone());
+            self.get_data_mut().absorb(operation);
+        }
+    }
+}
+
+/// SAFETY: behaves like a &mut T and &mut Vec<O>. https://doc.rust-lang.org/stable/std/marker/trait.Sync.html
+unsafe impl<T: Send, O: Send> Send for WriteGuard<'_, T, O> {}
+
+/// Safety: can only create shared refs to T, not to O. https://doc.rust-lang.org/stable/std/marker/trait.Sync.html
+unsafe impl<T: Sync, O> Sync for WriteGuard<'_, T, O> {}
+
+impl<T, O> Drop for WriteGuard<'_, T, O> {
+    fn drop(&mut self) {
+        self.writer.swap();
     }
 }
