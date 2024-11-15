@@ -184,3 +184,12 @@ impl<T> Shared<T> {
         true
     }
 }
+
+/// SAFETY: same as SyncUnsafeCell. Synchronisation done by Reader and Writer
+/// 
+/// Isn't actually needed for the library as the public types have their own Send & Sync impls
+/// which are needed as they have a ptr to Shared.
+/// Clarifies that multithreaded refs are fine.
+/// 
+/// Send is autoimplemented, because UnsafeCell is Send if T: Send
+unsafe impl<T: Sync> Sync for Shared<T> {}

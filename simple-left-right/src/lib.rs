@@ -158,9 +158,18 @@ pub struct Writer<T, O> {
 
 impl<T, O> Writer<T, O> {
     const fn shared_ref(&self) -> &Shared<T> {
-        // SAFETY: Reader always has a valid Shared<T>, a mut ref to a shared is never created,
-        // only to the UnsafeCell<T>s inside of it
+        // SAFETY: Reader always has a valid Shared<T>, the only possibility to get a &mut Shared requires &mut self
         unsafe { self.shared.as_ref() }
+    }
+
+    /// if no Reader exists this gives a mut ref to Shared.
+    fn shared_mut(&mut self) -> Option<&mut Shared<T>> {
+        if self.shared_ref().is_unique() {
+            // SAFETY: No Reader exists, as is_unique returns true
+            Some(unsafe { &mut *self.shared.as_ptr() })
+        } else {
+            None
+        }
     }
 
     /// swaps the read and write values. If no changes were made since the last swap nothing happens. Never blocks
@@ -415,13 +424,9 @@ impl<T: Absorb<O>, O: Clone> WriteGuard<'_, T, O> {
     /// applies operation to the current write Value and stores it to apply to the other later.
     /// If there is no reader the operation is applied to both values immediately and not stored.
     pub fn apply_op(&mut self, operation: O) {
-        let shared_ref = self.writer.shared_ref();
-        if self.writer.shared_ref().is_unique() {
-            // SAFETY: is_unique checked that no Reader exists. I am the only one with access to Shared<T>, so i can modify whatever i want.
-            unsafe {
-                (*shared_ref.value_1.get()).absorb(operation.clone());
-                (*shared_ref.value_2.get()).absorb(operation);
-            }
+        if let Some(shared) = self.writer.shared_mut() {
+            shared.value_1.get_mut().absorb(operation.clone());
+            shared.value_2.get_mut().absorb(operation);
         } else {
             self.writer.op_buffer.push_back(operation.clone());
             self.get_data_mut().absorb(operation);
