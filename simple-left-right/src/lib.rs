@@ -21,14 +21,10 @@
     clippy::missing_safety_doc,
     clippy::undocumented_unsafe_blocks
 )]
-#![cfg_attr(not(feature = "std"), no_std)]
+
+#![no_std]
 
 extern crate alloc;
-
-#[cfg(feature = "std")]
-use core::time::Duration;
-#[cfg(feature = "std")]
-use std::thread;
 
 use core::{
     cell::UnsafeCell,
@@ -40,9 +36,9 @@ use core::{
 
 use alloc::{boxed::Box, collections::vec_deque::VecDeque};
 
-mod inner;
+mod shared;
 
-use inner::{Ptr, Shared};
+use shared::{Ptr, Shared};
 
 /// Should be implemented on structs that want to be shared with this library
 pub trait Absorb<O> {
@@ -201,75 +197,8 @@ impl<T, O> Writer<T, O> {
 }
 
 impl<T: Absorb<O>, O> Writer<T, O> {
-    /// Blocks if the Reader has a `ReadGuard` pointing to the old value.
-    ///
-    /// Uses a Spinlock because for anything else the OS needs to be involved and `Reader` can't talk to the OS.
-    pub fn lock(&mut self) -> WriteGuard<'_, T, O> {
-        let backoff = crossbeam_utils::Backoff::new();
-
-        loop {
-            if self.shared_ref().lock_write(self.write_ptr).is_ok() {
-                break;
-            }
-
-            backoff.snooze();
-        }
-
-        // SAFETY: The spinloop before is only exited once the ReadState allows writing to the current
-        // write_ptr value.
-        unsafe { WriteGuard::new(self) }
-    }
-
-    /// Blocks if the Reader has a `ReadGuard` pointing to the old value.
-    ///
-    /// Uses a spin-lock, because the `Reader` can't talk to the OS. Sleeping and Yielding is done to avoid wasting cycles.
-    /// Equivalent to ´lock´, except that it starts sleeping the given duration after a certaint point until the lock could be aquired.
-    #[cfg(feature = "std")]
-    pub fn sleep_lock(&mut self, sleep: Duration) -> WriteGuard<'_, T, O> {
-        let backoff = crossbeam_utils::Backoff::new();
-
-        loop {
-            if self.shared_ref().lock_write(self.write_ptr).is_ok() {
-                break;
-            }
-
-            if backoff.is_completed() {
-                thread::sleep(sleep);
-            } else {
-                backoff.snooze();
-            }
-        }
-
-        // SAFETY: The spinloop before is only exited once the ReadState allows writing to the current
-        // write_ptr value.
-        unsafe { WriteGuard::new(self) }
-    }
-
-    /// Equivalent to `lock` but the sleeping is done asyncly to not block the runtime.
-    /// It is still a spinlock, it just give control to the runtime when locking is slow, before trying again.
-    #[cfg(feature = "async")]
-    pub async fn async_lock(&mut self, sleep: Duration) -> WriteGuard<'_, T, O> {
-        let backoff = crossbeam_utils::Backoff::new();
-
-        loop {
-            if self.shared_ref().lock_write(self.write_ptr).is_ok() {
-                break;
-            }
-
-            if backoff.is_completed() {
-                async_io::Timer::after(sleep).await;
-            } else {
-                backoff.spin();
-                futures_lite::future::yield_now().await;
-            }
-        }
-
-        // SAFETY: The spinloop before is only exited once the ReadState allows writing to the current
-        // write_ptr value.
-        unsafe { WriteGuard::new(self) }
-    }
-
-    /// doesn't block. Returns None if the Reader has a `ReadGuard` pointing to the old value
+    /// doesn't block. Returns None if the Reader has a `ReadGuard` pointing to the old value.
+    #[must_use]
     pub fn try_lock(&mut self) -> Option<WriteGuard<'_, T, O>> {
         self.shared_ref()
             .lock_write(self.write_ptr)

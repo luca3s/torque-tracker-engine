@@ -12,7 +12,7 @@ keywords = ["audio"]
 categories = ["audio"]
 
 [features]
-async = ["dep:async-io", "dep:futures-lite", "dep:async-channel", "dep:futures-io", "simple-left-right/async"]
+async = ["dep:async-io", "dep:futures-lite", "dep:async-channel", "dep:futures-io"]
 
 [dependencies]
 async-io = { version = "2.3.4", optional = true }
@@ -24,7 +24,7 @@ basedrop = "0.1.2" # miri reports Race Condition. Wait for fix or pull inside
 cpal = "0.15.3"
 crossbeam-utils = "0.8.20"
 rtrb = "0.3.1"
-simple-left-right = { path = "../simple-left-right", features = ["std"] }
+simple-left-right = { path = "../simple-left-right" }
 # assert_no_alloc
 
 [dev-dependencies]

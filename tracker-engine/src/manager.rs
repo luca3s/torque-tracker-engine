@@ -23,6 +23,37 @@ enum ManageCollector {
     External(async_channel::Sender<usize>, Handle),
 }
 
+fn spin(mut f: impl FnMut() -> bool, time: Duration) {
+    let backoff = crossbeam_utils::Backoff::new();
+    loop {
+        if f() {
+            return;
+        }
+
+        if backoff.is_completed() {
+            std::thread::sleep(time);
+        } else {
+            backoff.snooze();
+        }
+    }
+}
+
+#[cfg(feature = "async")]
+async fn async_spin(mut f: impl FnMut() -> bool, time: Duration) {
+    let backoff = crossbeam_utils::Backoff::new();
+        loop {
+            if f() {
+                return;
+            }
+
+            if backoff.is_completed() {
+                async_io::Timer::after(time).await;
+            } else {
+                backoff.snooze();
+            }
+        }
+}
+
 impl ManageCollector {
     fn handle(&self) -> Handle {
         match self {
@@ -166,8 +197,9 @@ impl AudioManager {
     ///
     /// Spinloops until no more ReadGuard to the old value exists
     pub fn edit_song(&mut self) -> SongEdit<'_> {
+        spin(|| self.song.try_lock().is_some(), Self::SPIN_SLEEP);
         SongEdit {
-            song: self.song.sleep_lock(Self::SPIN_SLEEP),
+            song: self.song.try_lock().unwrap(),
             gc: &mut self.gc
         }
     }
@@ -233,18 +265,7 @@ impl AudioManager {
 
     pub fn send_worker_msg(&mut self, msg: ToWorkerMsg) {
         if let Some((_, channel)) = &mut self.stream {
-            let backoff = crossbeam_utils::Backoff::new();
-            loop {
-                if channel.push(msg).is_ok() {
-                    return;
-                }
-
-                if backoff.is_completed() {
-                    std::thread::sleep(Self::SPIN_SLEEP);
-                } else {
-                    backoff.snooze();
-                }
-            }
+            spin(|| channel.push(msg).is_ok(), Self::SPIN_SLEEP);
         }
     }
 
@@ -253,7 +274,7 @@ impl AudioManager {
             self.send_worker_msg(ToWorkerMsg::StopPlayback);
             self.send_worker_msg(ToWorkerMsg::StopLiveNote);
             drop(stream);
-            #[cfg(not(feature = "async"))]
+
             self.gc.collect();
         }
     }
@@ -264,18 +285,7 @@ impl AudioManager {
 impl AudioManager {
     pub async fn async_send_worker_msg(&mut self, msg: ToWorkerMsg) {
         if let Some((_, channel)) = &mut self.stream {
-            let backoff = crossbeam_utils::Backoff::new();
-            loop {
-                if channel.push(msg).is_ok() {
-                    return;
-                }
-
-                if backoff.is_completed() {
-                    async_io::Timer::after(Self::SPIN_SLEEP).await;
-                } else {
-                    backoff.snooze();
-                }
-            }
+            async_spin(|| channel.push(msg).is_ok(), Self::SPIN_SLEEP).await;
         }
     }
 
@@ -296,8 +306,9 @@ impl AudioManager {
             ManageCollector::External(_, handle) => handle.clone(),
         };
 
+        async_spin(|| self.song.try_lock().is_some(), Self::SPIN_SLEEP).await;
         SongEdit {
-            song: self.song.async_lock(Self::SPIN_SLEEP).await,
+            song: self.song.try_lock().unwrap(),
             gc: &mut self.gc
         }
     }
