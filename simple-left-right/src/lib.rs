@@ -374,3 +374,45 @@ impl<T, O> Drop for WriteGuard<'_, T, O> {
         self.writer.swap();
     }
 }
+
+#[cfg(test)]
+mod internal_test {
+    use core::cell::Cell;
+
+    use crate::{Absorb, Writer};
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct CounterAddOp(i32);
+
+    impl Absorb<CounterAddOp> for i32 {
+        fn absorb(&mut self, operation: CounterAddOp) {
+            *self += operation.0;
+        }
+    }
+
+    impl Absorb<CounterAddOp> for Cell<i32> {
+        fn absorb(&mut self, operation: CounterAddOp) {
+            self.set(self.get() + operation.0);
+        }
+    }
+
+    #[test]
+    fn drop_reader() {
+        let mut writer: Writer<i32, CounterAddOp> = Writer::default();
+        let reader = writer.build_reader().unwrap();
+
+        assert!(!writer.shared_ref().is_unique());
+        drop(reader);
+        assert!(writer.shared_ref().is_unique());
+    }
+
+    #[test]
+    fn drop_writer() {
+        let mut writer: Writer<i32, CounterAddOp> = Writer::default();
+        let reader = writer.build_reader().unwrap();
+
+        assert!(!reader.shared_ref().is_unique());
+        drop(writer);
+        assert!(reader.shared_ref().is_unique());
+    }
+}

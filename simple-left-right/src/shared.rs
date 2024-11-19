@@ -25,9 +25,22 @@ impl Ptr {
 struct State(u8);
 
 impl State {
-    const NOREAD_VALUE1_1ACCESS: Self = Self(0b00001);
+    const NOREAD_VALUE1_1ACCESS: Self = Self::new(0b00001);
     const NOREAD_MASK: u8 = 0b10011;
     const READ_MASK: u8 = 0b01100;
+
+    #[inline]
+    // only does debug tests that state is valid
+    // could be turned into assert_uncheckeds as they are still checkd in debug
+    const fn new(value: u8) -> Self {
+        // max 2 accesses
+        debug_assert!(value & 0b11 <= 2);
+        // min 1 access
+        debug_assert!(value & 0b11 > 0);
+        // max 1 read
+        debug_assert!((value & 0b1100).count_ones() <= 1);
+        Self(value)
+    }
 
     // this should be inlined to have the assert_unchecked be useful
     #[inline]
@@ -42,7 +55,6 @@ impl State {
 
     fn read_ptr(self) -> Ptr {
         // mask out everything except the read ptr
-        // (self.0 & 0b10000) as Ptr
         if self.0 & 0b10000 == 0 {
             Ptr::Value1
         } else {
@@ -51,6 +63,8 @@ impl State {
     }
 
     fn with_read(self, ptr: Ptr) -> Self {
+        // no read state exists.
+        debug_assert_eq!(self.0 & 0b01100, 0);
         match ptr {
             Ptr::Value1 => Self(self.0 | 0b00100),
             Ptr::Value2 => Self(self.0 | 0b01000),
@@ -88,15 +102,20 @@ pub(crate) struct Shared<T> {
 
 impl<T> Shared<T> {
     pub(crate) fn lock_read(&self) -> Ptr {
+        // fetch update loop could be replaced with:
+        // - set read state to both
+        // - read read ptr
+        // - set read state to only that
+        // this would need to be synchronized correctly and is probably not faster than this
         let result = self
             .state
             .fetch_update(Ordering::Relaxed, Ordering::Acquire, |value| {
-                Some(State(value).with_read(State(value).read_ptr()).0)
+                Some(State::new(value).with_read(State::new(value).read_ptr()).0)
             });
         // SAFETY: fetch_update closure always returns Some, so the result is alwyays Ok
         let result = unsafe { result.unwrap_unchecked() };
         // result is the previous value, so the read_state isn't set, only the read_ptr
-        State(result).read_ptr()
+        State::new(result).read_ptr()
     }
 
     pub(crate) fn release_read_lock(&self) {
@@ -106,7 +125,7 @@ impl<T> Shared<T> {
 
     /// tries to get the write lock to the ptr.
     pub(crate) fn lock_write(&self, ptr: Ptr) -> Result<(), ()> {
-        let state = State(self.state.load(Ordering::Relaxed));
+        let state = State::new(self.state.load(Ordering::Relaxed));
         if state.can_write(ptr) {
             // only need to synchronize with another thread when locking was successfull
             atomic::fence(Ordering::Acquire);
@@ -118,15 +137,16 @@ impl<T> Shared<T> {
 
     /// Releases the read lock
     pub(crate) fn set_read_ptr(&self, ptr: Ptr) {
-        match ptr {
+        let value = match ptr {
             Ptr::Value1 => self.state.fetch_and(0b01111, Ordering::Release),
             Ptr::Value2 => self.state.fetch_or(0b10000, Ordering::Release),
         };
+        State::new(value);
     }
 
     /// initializes the internal state. returns the ptr that
     pub(crate) fn initialize_state(this: &mut MaybeUninit<Self>) -> Ptr {
-        // SAFETY: takes &mut self, so no writing is okay
+        // SAFETY: takes &mut self, so writing is okay
         unsafe {
             (&raw mut (*this.as_mut_ptr()).state).write(AtomicU8::new(State::NOREAD_VALUE1_1ACCESS.0));
         }
@@ -162,7 +182,7 @@ impl<T> Shared<T> {
     }
 
     pub(crate) fn is_unique(&self) -> bool {
-        let access = State(self.state.load(Ordering::Acquire)).access_count();
+        let access = State::new(self.state.load(Ordering::Acquire)).access_count();
         access == 1
     }
 
@@ -175,7 +195,7 @@ impl<T> Shared<T> {
     ///
     /// dropping self when this returns true is safe and needed synchronisation has been done.
     pub(crate) unsafe fn should_drop(&self) -> bool {
-        let old_access = State(self.state.fetch_sub(1, Ordering::Release)).access_count();
+        let old_access = State::new(self.state.fetch_sub(1, Ordering::Release)).access_count();
         if old_access != 1 {
             return false;
         }

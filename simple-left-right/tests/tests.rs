@@ -1,5 +1,5 @@
 #[cfg(test)]
-mod tests {
+mod usage_test {
     use simple_left_right::{Absorb, WriteGuard, Writer};
     use std::{cell::Cell, hint, time::Duration};
 
@@ -43,16 +43,16 @@ mod tests {
         let mut writer = Writer::new(0);
         let mut reader = writer.build_reader().unwrap();
         assert_eq!(*reader.lock(), 0);
-        let mut write_lock = spin_lock(&mut writer);
+        let mut write_lock = writer.try_lock().unwrap();
         assert_eq!(*write_lock.read(), 0);
         write_lock.apply_op(CounterAddOp(2));
         assert_eq!(*write_lock.read(), 2);
         drop(write_lock);
-        let write_lock = spin_lock(&mut writer);
+        let write_lock = writer.try_lock().unwrap();
         assert_eq!(*write_lock.read(), 2);
         write_lock.swap();
         assert_eq!(*reader.lock(), 2);
-        assert_eq!(*spin_lock(&mut writer).read(), 2);
+        assert_eq!(*writer.try_lock().unwrap().read(), 2);
     }
 
     #[test]
@@ -114,7 +114,7 @@ mod tests {
         let mut writer = Writer::new(0);
         let mut reader = writer.build_reader().unwrap();
 
-        spin_lock(&mut writer).apply_op(CounterAddOp(2));
+        writer.try_lock().unwrap().apply_op(CounterAddOp(2));
         std::thread::spawn(move || {
             let lock = reader.lock();
             assert_eq!(*lock, 0);
@@ -123,7 +123,7 @@ mod tests {
             assert_eq!(*reader.lock(), 2);
         });
         std::thread::sleep(Duration::from_secs(1));
-        spin_lock(&mut writer).swap();
+        writer.try_lock().unwrap().swap();
         // blocks until the spawned thread drops the read_lock
         let write_lock = spin_lock(&mut writer);
         assert_eq!(*write_lock.read(), 2);
