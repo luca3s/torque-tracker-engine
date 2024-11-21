@@ -182,9 +182,11 @@ impl<T, O> Writer<T, O> {
 
     /// get a Reader if none exists
     pub fn build_reader(&mut self) -> Option<Reader<T>> {
+        let shared_ref = self.shared_ref();
         // SAFETY: all is_unique_with_increase requirements are satisfied.
         unsafe {
-            if self.shared_ref().is_unique_with_increase() {
+            if shared_ref.is_unique() {
+                shared_ref.set_shared();
                 Some(Reader {
                     shared: self.shared,
                     _own: PhantomData,

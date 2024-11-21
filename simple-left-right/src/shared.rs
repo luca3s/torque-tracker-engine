@@ -1,6 +1,5 @@
 use core::{
     cell::UnsafeCell,
-    hint::assert_unchecked,
     mem::MaybeUninit,
     sync::atomic::{self, AtomicU8, Ordering},
 };
@@ -9,7 +8,7 @@ use core::{
 #[repr(u8)]
 pub(crate) enum Ptr {
     Value1 = 0,
-    Value2 = 0b10000,
+    Value2 = 0b1000,
 }
 
 impl Ptr {
@@ -22,40 +21,42 @@ impl Ptr {
 }
 
 #[repr(transparent)]
+#[derive(Debug, Clone, Copy)]
 struct State(u8);
 
 impl State {
-    const NOREAD_VALUE1_1ACCESS: Self = Self::new(0b00001);
-    const NOREAD_MASK: u8 = 0b10011;
-    const READ_MASK: u8 = 0b01100;
+    /// - Read Ptr: Value 1,
+    /// - No Read
+    /// - Unique
+    const INITIAL: u8           = 0b0000;
+
+    const VALUE1_READ: u8       = 0b0010;
+    const VALUE2_READ: u8       = 0b0100;
+    const READ_MASK: u8         = 0b0110;
+    const NOREAD_MASK: u8       = 0b1001;
+    const UNIQUE_MASK: u8       = 0b0001;
+    const INV_UNIQUE_MASK: u8   = 0b1110;
+    const READ_PTR_MASK: u8     = 0b1000;
+    const INV_READ_PTR: u8      = 0b0111;
 
     #[inline]
     // only does debug tests that state is valid
     // could be turned into assert_uncheckeds as they are still checkd in debug
-    const fn new(value: u8) -> Self {
-        // max 2 accesses
-        debug_assert!(value & 0b11 <= 2);
-        // min 1 access
-        debug_assert!(value & 0b11 > 0);
+    fn new(value: u8) -> Self {
         // max 1 read
-        debug_assert!((value & 0b1100).count_ones() <= 1);
+        debug_assert!((value & Self::READ_MASK).count_ones() <= 1, "{value:b}");
+        // only lower 4 bits are used
+        debug_assert!(value & 0b11110000 == 0, "{value:b}");
         Self(value)
     }
 
-    // this should be inlined to have the assert_unchecked be useful
-    #[inline]
-    fn access_count(self) -> u8 {
-        // mask out the top bits
-        let access = self.0 & 0b00011;
-        // SAFETY: The library only supports one reader and one writer at a time. This is checked in the is_unique functions of Shared
-        // the compiler already knows that it is 3 at max. we constrict it further
-        unsafe { assert_unchecked(access <= 2); }
-        access
+    fn is_unique(self) -> bool {
+        self.0 & Self::UNIQUE_MASK == 0
     }
 
     fn read_ptr(self) -> Ptr {
         // mask out everything except the read ptr
-        if self.0 & 0b10000 == 0 {
+        if self.0 & Self::READ_PTR_MASK == 0 {
             Ptr::Value1
         } else {
             Ptr::Value2
@@ -64,18 +65,20 @@ impl State {
 
     fn with_read(self, ptr: Ptr) -> Self {
         // no read state exists.
-        debug_assert_eq!(self.0 & 0b01100, 0);
-        match ptr {
-            Ptr::Value1 => Self(self.0 | 0b00100),
-            Ptr::Value2 => Self(self.0 | 0b01000),
-        }
+        debug_assert_eq!(self.0 & Self::READ_MASK, 0);
+        let mask = match ptr {
+            Ptr::Value1 => Self::VALUE1_READ,
+            Ptr::Value2 => Self::VALUE2_READ,
+        };
+
+        Self(self.0 | mask)
     }
 
     fn can_write(self, ptr: Ptr) -> bool {
         #[expect(clippy::match_like_matches_macro)] // i think it's more readable like this
         match (self.0 & Self::READ_MASK, ptr) {
-            (0b0100, Ptr::Value1) => false,
-            (0b1000, Ptr::Value2) => false,
+            (Self::VALUE1_READ, Ptr::Value1) => false,
+            (Self::VALUE2_READ, Ptr::Value2) => false,
             _ => true
         }
     }
@@ -88,15 +91,12 @@ pub(crate) struct Shared<T> {
     /// ### Bits from low to high
     /// | bit | meaning |
     /// |---|---|
-    /// | 0-1 | how many Reader or Writer exist (max 2) |
-    /// | 2 | is value 1 being read |
-    /// | 3 | is value 2 being read |
-    /// | 4 | which value should be read next (0: value 1, 1: value 2) |
+    /// | 0 | 0: unique, 1: second object exists |
+    /// | 1 | is value 1 being read |
+    /// | 2 | is value 2 being read |
+    /// | 3 | which value should be read next (0: value 1, 1: value 2) |
     ///
     /// This mixed use doesn't lead to more contention because there are only two threads max.
-    ///
-    /// Access count is in the lower bits, so that fetch_add and fetch_sub still work for that purpose.
-    /// Locking and Unlocking is done via bitand / or and fetch_update anyways
     state: AtomicU8,
 }
 
@@ -110,7 +110,9 @@ impl<T> Shared<T> {
         let result = self
             .state
             .fetch_update(Ordering::Relaxed, Ordering::Acquire, |value| {
-                Some(State::new(value).with_read(State::new(value).read_ptr()).0)
+                let state = State::new(value);
+                let ptr = state.read_ptr();
+                Some(state.with_read(ptr).0)
             });
         // SAFETY: fetch_update closure always returns Some, so the result is alwyays Ok
         let result = unsafe { result.unwrap_unchecked() };
@@ -138,8 +140,8 @@ impl<T> Shared<T> {
     /// Releases the read lock
     pub(crate) fn set_read_ptr(&self, ptr: Ptr) {
         let value = match ptr {
-            Ptr::Value1 => self.state.fetch_and(0b01111, Ordering::Release),
-            Ptr::Value2 => self.state.fetch_or(0b10000, Ordering::Release),
+            Ptr::Value1 => self.state.fetch_and(State::INV_READ_PTR, Ordering::Release),
+            Ptr::Value2 => self.state.fetch_or(State::READ_PTR_MASK, Ordering::Release),
         };
         State::new(value);
     }
@@ -148,7 +150,7 @@ impl<T> Shared<T> {
     pub(crate) fn initialize_state(this: &mut MaybeUninit<Self>) -> Ptr {
         // SAFETY: takes &mut self, so writing is okay
         unsafe {
-            (&raw mut (*this.as_mut_ptr()).state).write(AtomicU8::new(State::NOREAD_VALUE1_1ACCESS.0));
+            (&raw mut (*this.as_mut_ptr()).state).write(AtomicU8::new(State::INITIAL));
         }
         Ptr::Value2
     }
@@ -171,19 +173,12 @@ impl<T> Shared<T> {
     /// Otherwise returns false.
     ///
     /// If this returns true another smart pointer has to be created otherwise memory will be leaked
-    pub(crate) unsafe fn is_unique_with_increase(&self) -> bool {
-        if self.is_unique() {
-            // relaxed taken from std Arc
-            self.state.fetch_add(1, Ordering::Relaxed);
-            true
-        } else {
-            false
-        }
+    pub(crate) unsafe fn set_shared(&self) {
+        self.state.fetch_or(State::UNIQUE_MASK, Ordering::Relaxed);
     }
 
     pub(crate) fn is_unique(&self) -> bool {
-        let access = State::new(self.state.load(Ordering::Acquire)).access_count();
-        access == 1
+        State::new(self.state.load(Ordering::Acquire)).is_unique()
     }
 
     /// decreases the access_count and returns if self should now be dropped.
@@ -195,8 +190,7 @@ impl<T> Shared<T> {
     ///
     /// dropping self when this returns true is safe and needed synchronisation has been done.
     pub(crate) unsafe fn should_drop(&self) -> bool {
-        let old_access = State::new(self.state.fetch_sub(1, Ordering::Release)).access_count();
-        if old_access != 1 {
+        if !State::new(self.state.fetch_and(State::INV_UNIQUE_MASK, Ordering::Release)).is_unique() {
             return false;
         }
         // see std Arc
