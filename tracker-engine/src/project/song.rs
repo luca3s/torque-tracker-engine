@@ -172,6 +172,7 @@ pub enum SongOperation {
     SetVolume(usize, u8),
     SetPan(usize, Pan),
     SetSample(usize, SampleMetaData, SampleData),
+    RemoveSample(usize),
     PatternOperation(usize, PatternOperation),
     SetOrder(usize, PatternOrder),
 }
@@ -182,6 +183,7 @@ pub(crate) enum ValidOperation {
     SetVolume(usize, u8),
     SetPan(usize, Pan),
     SetSample(usize, SampleMetaData, Shared<SampleData>),
+    RemoveSample(usize),
     PatternOperation(usize, PatternOperation),
     SetOrder(usize, PatternOrder),
 }
@@ -196,6 +198,7 @@ impl ValidOperation {
             SongOperation::SetVolume(c, _) => c < Song::<true>::MAX_CHANNELS,
             SongOperation::SetPan(c, _) => c < Song::<true>::MAX_CHANNELS,
             SongOperation::SetSample(idx, _, _) => idx < Song::<true>::MAX_SAMPLES,
+            SongOperation::RemoveSample(idx) => idx < Song::<true>::MAX_SAMPLES,
             SongOperation::PatternOperation(idx, op) => match song.patterns.get(idx) {
                 Some(pattern) => pattern.operation_is_valid(&op),
                 None => false,
@@ -210,6 +213,7 @@ impl ValidOperation {
                 SongOperation::SetSample(i, sample_meta_data, sample_data) => {
                     Self::SetSample(i, sample_meta_data, Shared::new(handle, sample_data))
                 }
+                SongOperation::RemoveSample(i) => Self::RemoveSample(i),
                 SongOperation::PatternOperation(i, pattern_operation) => {
                     Self::PatternOperation(i, pattern_operation)
                 }
@@ -249,6 +253,7 @@ impl Debug for ValidOperation {
                 .field(arg1)
                 .field(arg2.deref())
                 .finish(),
+            Self::RemoveSample(arg0) => f.debug_tuple("RemoveSample").field(arg0).finish(),
             Self::PatternOperation(arg0, arg1) => f
                 .debug_tuple("PatternOperation")
                 .field(arg0)
@@ -264,15 +269,14 @@ impl Debug for ValidOperation {
 impl simple_left_right::Absorb<ValidOperation> for Song<true> {
     fn absorb(&mut self, operation: ValidOperation) {
         match operation {
-            ValidOperation::SetVolume(chan, val) => self.volume[chan] = val,
-            ValidOperation::SetPan(chan, val) => self.pan[chan] = val,
-            ValidOperation::SetSample(sample, meta, data) => {
-                self.samples[sample] = Some((meta, Sample::<true>::new(data)))
+            ValidOperation::SetVolume(i, val) => self.volume[i] = val,
+            ValidOperation::SetPan(i, val) => self.pan[i] = val,
+            ValidOperation::SetSample(i, meta, data) => {
+                self.samples[i] = Some((meta, Sample::<true>::new(data)))
             }
-            ValidOperation::PatternOperation(pattern, op) => {
-                self.patterns[pattern].apply_operation(op)
-            }
-            ValidOperation::SetOrder(idx, order) => self.pattern_order[idx] = order,
+            ValidOperation::RemoveSample(i) => self.samples[i] = None,
+            ValidOperation::PatternOperation(i, op) => self.patterns[i].apply_operation(op),
+            ValidOperation::SetOrder(i, order) => self.pattern_order[i] = order,
         }
     }
 }

@@ -349,6 +349,13 @@ impl Drop for AudioManager {
     /// if this panics the drop implementation isn't right and the Audio Callback isn't cleaned up properly
     fn drop(&mut self) {
         self.deinit_audio();
+        let mut song = self.edit_song();
+        for i in 0..Song::<true>::MAX_SAMPLES {
+            song.apply_operation(SongOperation::RemoveSample(i)).unwrap();
+        }
+        song.finish();
+        // lock it once more to ensure that the changes were propagated
+        self.edit_song();
         // due to async feature
         #[allow(irrefutable_let_patterns)]
         if let ManageCollector::Internal(ref mut collector, _) = self.gc {
@@ -370,7 +377,6 @@ impl Drop for AudioManager {
 // need manuallyDrop because i need consume on drop behaviour
 pub struct SongEdit<'a> {
     song: WriteGuard<'a, Song<true>, ValidOperation>,
-    // gc_handle: Handle,
     gc: &'a mut ManageCollector,
 }
 
