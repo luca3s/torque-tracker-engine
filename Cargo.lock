@@ -364,6 +364,7 @@ dependencies = [
  "hound",
  "rtrb",
  "simple-left-right",
+ "triple_buffer",
 ]
 
 [[package]]
@@ -788,6 +789,15 @@ name = "tracing-core"
 version = "0.1.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c06d3da6113f116aaee68e4d601191614c9053067f9ab7f6edbcb161237daa54"
+
+[[package]]
+name = "triple_buffer"
+version = "8.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e66931c8eca6381f0d34656a9341f09bd462010488c1a3bc0acd3f2d08dffce"
+dependencies = [
+ "crossbeam-utils",
+]
 
 [[package]]
 name = "unicode-ident"

@@ -1,25 +1,27 @@
 use std::fmt::Debug;
 use std::ops::{AddAssign, IndexMut};
 
-use crate::audio_processing::playback::PlaybackState;
+use crate::audio_processing::playback::{PlaybackState, PlaybackStatus};
 use crate::audio_processing::sample::Interpolation;
 use crate::audio_processing::sample::SamplePlayer;
 use crate::audio_processing::Frame;
-use crate::manager::{AudioMsgConfig, FromWorkerMsg, OutputConfig, PlaybackSettings};
+use crate::manager::{OutputConfig, PlaybackSettings};
 use crate::project::note_event::NoteEvent;
 use crate::project::song::Song;
 use cpal::{Sample, SampleFormat};
 use simple_left_right::Reader;
 
+pub type LiveAudioStatus = (Option<PlaybackStatus>, cpal::OutputStreamTimestamp);
+
 pub(crate) struct LiveAudio {
     song: Reader<Song<true>>,
     playback_state: Option<PlaybackState<'static, true>>,
     live_note: Option<SamplePlayer<'static, true>>,
-    // replace with something explicitly realtime safe. I think std mpsc does syscalls to sleep and wake the thread
     manager: rtrb::Consumer<ToWorkerMsg>,
-    audio_msg_config: AudioMsgConfig,
-    to_app: rtrb::Producer<FromWorkerMsg>,
+    // gets created in the first callback. could maybe do with an MaybeUninit
+    state_sender: triple_buffer::Input<Option<LiveAudioStatus>>,
     config: OutputConfig,
+
     buffer: Box<[Frame]>,
 }
 
@@ -30,8 +32,7 @@ impl LiveAudio {
     pub fn new(
         song: Reader<Song<true>>,
         manager: rtrb::Consumer<ToWorkerMsg>,
-        audio_msg_config: AudioMsgConfig,
-        to_app: rtrb::Producer<FromWorkerMsg>,
+        state_sender: triple_buffer::Input<Option<LiveAudioStatus>>,
         config: OutputConfig,
     ) -> Self {
         Self {
@@ -39,11 +40,17 @@ impl LiveAudio {
             playback_state: None,
             live_note: None,
             manager,
-            audio_msg_config,
-            to_app,
+            state_sender,
             config,
             buffer: vec![Frame::default(); config.buffer_size.try_into().unwrap()].into(),
         }
+    }
+
+    fn send_state(&mut self, info: &cpal::OutputCallbackInfo) {
+        self.state_sender.write(Some((
+            self.playback_state.as_ref().map(|s| s.get_status()),
+            info.timestamp(),
+        )));
     }
 
     #[inline]
@@ -97,18 +104,11 @@ impl LiveAudio {
 
         // process song playback
         if let Some(playback) = &mut self.playback_state {
-            let old_position = playback.get_position();
             let playback_iter = playback.iter::<{ Self::INTERPOLATION }>(&song);
             self.buffer
                 .iter_mut()
                 .zip(playback_iter)
                 .for_each(|(buf, frame)| buf.add_assign(frame));
-
-            if self.audio_msg_config.playback_position && old_position != playback.get_position() {
-                let _ = self.to_app.push(FromWorkerMsg::CurrentPlaybackPosition(
-                    playback.get_position(),
-                ));
-            }
 
             if playback.is_done() {
                 self.playback_state = None;
@@ -172,21 +172,16 @@ impl LiveAudio {
                 _ => panic!("Sample Format not supported."),
             }
 
-            if self.audio_msg_config.buffer_finished {
-                let _ = self
-                    .to_app
-                    .push(FromWorkerMsg::BufferFinished(info.timestamp()));
-            }
+            self.send_state(info);
         }
     }
 
     // unsure wether i want to use this or untyped_callback
     // also relevant when cpal gets made into a generic that maybe this gets useful
-    #[expect(dead_code)]
     pub fn get_typed_callback<S: cpal::SizedSample + cpal::FromSample<f32>>(
         mut self,
     ) -> impl FnMut(&mut [S], &cpal::OutputCallbackInfo) {
-        move |data, _info| {
+        move |data, info| {
             assert_eq!(
                 data.len(),
                 usize::try_from(self.config.buffer_size).unwrap()
@@ -196,6 +191,7 @@ impl LiveAudio {
             if self.fill_internal_buffer() {
                 self.fill_from_internal(data);
             }
+            self.send_state(info);
         }
     }
 }

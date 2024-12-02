@@ -6,12 +6,14 @@ use crate::{
     project::song::Song,
 };
 
-// #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-// pub struct PlaybackPosition {
-//     pub order: usize,
-//     pub pattern: usize,
-//     pub row: u16,
-// }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlaybackStatus {
+    position: PlaybackPosition,
+    // which sample is playing,
+    // which how far along is each sample
+    // which channel is playing
+    // ...
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlaybackPosition {
@@ -122,8 +124,11 @@ impl<'sample, const GC: bool> PlaybackState<'sample, GC> {
         (samplerate * 10) / u32::from(tempo)
     }
 
-    pub fn get_position(&self) -> PlaybackPosition {
-        self.position
+    pub fn get_status(&self) -> PlaybackStatus {
+        // maybe if it gets more fields compute them while playing back and just copy out here
+        PlaybackStatus {
+            position: self.position,
+        }
     }
 
     pub fn set_samplerate(&mut self, samplerate: u32) {
@@ -238,10 +243,6 @@ impl<const INTERPOLATION: u8, const GC: bool> PlaybackIter<'_, '_, '_, INTERPOLA
                 false
             }
         }
-    }
-
-    pub fn get_position(&self) -> PlaybackPosition {
-        self.state.get_position()
     }
 }
 

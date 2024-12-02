@@ -3,7 +3,7 @@ use std::{num::NonZeroU16, time::Duration};
 use cpal::{traits::DeviceTrait, Sample};
 use impulse_engine::{
     live_audio::ToWorkerMsg,
-    manager::{AudioManager, AudioMsgConfig, OutputConfig},
+    manager::{AudioManager, OutputConfig},
     project::{
         event_command::NoteCommand,
         note_event::{Note, NoteEvent, VolumeEffect},
@@ -43,17 +43,7 @@ fn main() {
         sample_rate: default_config.sample_rate().0,
     };
 
-    let mut recv = manager
-        .init_audio(
-            default_device,
-            config,
-            AudioMsgConfig {
-                buffer_finished: true,
-                ..Default::default()
-            },
-            20,
-        )
-        .unwrap();
+    let mut recv = manager.init_audio(default_device, config).unwrap();
 
     let note_event = NoteEvent {
         note: Note::new(90).unwrap(),
@@ -65,7 +55,5 @@ fn main() {
     std::thread::sleep(Duration::from_secs(1));
     manager.send_worker_msg(ToWorkerMsg::PlayEvent(note_event));
     std::thread::sleep(Duration::from_secs(1));
-    while let Ok(event) = recv.pop() {
-        println!("{event:?}");
-    }
+    println!("{:?}", recv.read());
 }

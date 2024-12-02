@@ -25,6 +25,7 @@ cpal = "0.15.3"
 crossbeam-utils = "0.8.20"
 rtrb = "0.3.1"
 simple-left-right = { path = "../simple-left-right" }
+triple_buffer = "8.0.0"
 # assert_no_alloc
 
 [dev-dependencies]

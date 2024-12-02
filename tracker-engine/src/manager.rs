@@ -1,6 +1,4 @@
-use std::{
-    fmt::Debug, mem::ManuallyDrop, num::NonZeroU16, time::Duration
-};
+use std::{fmt::Debug, mem::ManuallyDrop, num::NonZeroU16, time::Duration};
 
 #[cfg(feature = "async")]
 use std::ops::ControlFlow;
@@ -11,7 +9,7 @@ use simple_left_right::{WriteGuard, Writer};
 
 use crate::{
     audio_processing::playback::PlaybackPosition,
-    live_audio::{LiveAudio, ToWorkerMsg},
+    live_audio::{LiveAudio, LiveAudioStatus, ToWorkerMsg},
     project::song::{Song, SongOperation, ValidOperation},
 };
 
@@ -41,17 +39,17 @@ fn spin(mut f: impl FnMut() -> bool, time: Duration) {
 #[cfg(feature = "async")]
 async fn async_spin(mut f: impl FnMut() -> bool, time: Duration) {
     let backoff = crossbeam_utils::Backoff::new();
-        loop {
-            if f() {
-                return;
-            }
-
-            if backoff.is_completed() {
-                async_io::Timer::after(time).await;
-            } else {
-                backoff.snooze();
-            }
+    loop {
+        if f() {
+            return;
         }
+
+        if backoff.is_completed() {
+            async_io::Timer::after(time).await;
+        } else {
+            backoff.snooze();
+        }
+    }
 }
 
 impl ManageCollector {
@@ -78,7 +76,7 @@ impl ManageCollector {
             #[cfg(feature = "async")]
             ManageCollector::External(channel, _) => {
                 _ = channel.send_blocking(frees);
-            },
+            }
         }
     }
 
@@ -88,7 +86,7 @@ impl ManageCollector {
             ManageCollector::Internal(_, num) => *num += frees,
             ManageCollector::External(channel, _) => {
                 _ = channel.send(frees).await;
-            },
+            }
         }
     }
 }
@@ -107,7 +105,11 @@ pub struct CollectGarbage {
 
 #[cfg(feature = "async")]
 impl CollectGarbage {
-    fn new(collector: ManuallyDrop<Collector>, channel: async_channel::Receiver<usize>, to_be_freed: usize) -> Self {
+    fn new(
+        collector: ManuallyDrop<Collector>,
+        channel: async_channel::Receiver<usize>,
+        to_be_freed: usize,
+    ) -> Self {
         Self {
             collector,
             channel: Some(channel),
@@ -200,7 +202,7 @@ impl AudioManager {
         spin(|| self.song.try_lock().is_some(), Self::SPIN_SLEEP);
         SongEdit {
             song: self.song.try_lock().unwrap(),
-            gc: &mut self.gc
+            gc: &mut self.gc,
         }
     }
 
@@ -222,17 +224,14 @@ impl AudioManager {
         &mut self,
         device: cpal::Device,
         config: OutputConfig,
-        audio_msg_config: AudioMsgConfig,
-        msg_buffer_size: usize,
-    ) -> Result<rtrb::Consumer<FromWorkerMsg>, cpal::BuildStreamError> {
+    ) -> Result<triple_buffer::Output<Option<LiveAudioStatus>>, cpal::BuildStreamError> {
         const TO_WORKER_CAPACITY: usize = 5;
 
-        let from_worker = rtrb::RingBuffer::new(msg_buffer_size);
+        let from_worker = triple_buffer::triple_buffer(&None);
         let to_worker = rtrb::RingBuffer::new(TO_WORKER_CAPACITY);
         let reader = self.song.build_reader().unwrap();
 
-        let audio_worker =
-            LiveAudio::new(reader, to_worker.1, audio_msg_config, from_worker.0, config);
+        let audio_worker = LiveAudio::new(reader, to_worker.1, from_worker.0, config);
 
         let stream = device.build_output_stream_raw(
             &config.into(),
@@ -309,7 +308,7 @@ impl AudioManager {
         async_spin(|| self.song.try_lock().is_some(), Self::SPIN_SLEEP).await;
         SongEdit {
             song: self.song.try_lock().unwrap(),
-            gc: &mut self.gc
+            gc: &mut self.gc,
         }
     }
 
@@ -331,7 +330,11 @@ impl AudioManager {
 
     /// makes the garbage collector internal again.
     pub fn insert_garbage_collector(&mut self, gc: CollectGarbage) {
-        let CollectGarbage {collector, to_be_freed, channel: _} = gc;
+        let CollectGarbage {
+            collector,
+            to_be_freed,
+            channel: _,
+        } = gc;
         self.gc = ManageCollector::Internal(collector, to_be_freed);
     }
 }
@@ -351,7 +354,8 @@ impl Drop for AudioManager {
         self.deinit_audio();
         let mut song = self.edit_song();
         for i in 0..Song::<true>::MAX_SAMPLES {
-            song.apply_operation(SongOperation::RemoveSample(i)).unwrap();
+            song.apply_operation(SongOperation::RemoveSample(i))
+                .unwrap();
         }
         song.finish();
         // lock it once more to ensure that the changes were propagated
@@ -438,12 +442,6 @@ impl TryFrom<cpal::StreamConfig> for OutputConfig {
             }),
         }
     }
-}
-
-#[derive(Default, Debug, Clone, Copy)]
-pub struct AudioMsgConfig {
-    pub buffer_finished: bool,
-    pub playback_position: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
