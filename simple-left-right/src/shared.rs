@@ -28,16 +28,16 @@ impl State {
     /// - Read Ptr: Value 1,
     /// - No Read
     /// - Unique
-    const INITIAL: u8           = 0b0000;
+    const INITIAL: u8 = 0b0000;
 
-    const VALUE1_READ: u8       = 0b0010;
-    const VALUE2_READ: u8       = 0b0100;
-    const READ_MASK: u8         = 0b0110;
-    const NOREAD_MASK: u8       = 0b1001;
-    const UNIQUE_MASK: u8       = 0b0001;
-    const INV_UNIQUE_MASK: u8   = 0b1110;
-    const READ_PTR_MASK: u8     = 0b1000;
-    const INV_READ_PTR: u8      = 0b0111;
+    const VALUE1_READ: u8 = 0b0010;
+    const VALUE2_READ: u8 = 0b0100;
+    const READ_MASK: u8 = 0b0110;
+    const NOREAD_MASK: u8 = 0b1001;
+    const UNIQUE_MASK: u8 = 0b0001;
+    const INV_UNIQUE_MASK: u8 = 0b1110;
+    const READ_PTR_MASK: u8 = 0b1000;
+    const INV_READ_PTR: u8 = 0b0111;
 
     #[inline]
     // only does debug tests that state is valid
@@ -79,7 +79,7 @@ impl State {
         match (self.0 & Self::READ_MASK, ptr) {
             (Self::VALUE1_READ, Ptr::Value1) => false,
             (Self::VALUE2_READ, Ptr::Value2) => false,
-            _ => true
+            _ => true,
         }
     }
 }
@@ -121,8 +121,7 @@ impl<T> Shared<T> {
     }
 
     pub(crate) fn release_read_lock(&self) {
-        self.state
-            .fetch_and(State::NOREAD_MASK, Ordering::Release);
+        self.state.fetch_and(State::NOREAD_MASK, Ordering::Release);
     }
 
     /// tries to get the write lock to the ptr.
@@ -190,7 +189,12 @@ impl<T> Shared<T> {
     ///
     /// dropping self when this returns true is safe and needed synchronisation has been done.
     pub(crate) unsafe fn should_drop(&self) -> bool {
-        if !State::new(self.state.fetch_and(State::INV_UNIQUE_MASK, Ordering::Release)).is_unique() {
+        if !State::new(
+            self.state
+                .fetch_and(State::INV_UNIQUE_MASK, Ordering::Release),
+        )
+        .is_unique()
+        {
             return false;
         }
         // see std Arc
@@ -200,10 +204,10 @@ impl<T> Shared<T> {
 }
 
 /// SAFETY: same as SyncUnsafeCell. Synchronisation done by Reader and Writer
-/// 
+///
 /// Isn't actually needed for the library as the public types have their own Send & Sync impls
 /// which are needed as they have a ptr to Shared.
 /// Clarifies that multithreaded refs are fine.
-/// 
+///
 /// Send is autoimplemented, because UnsafeCell is Send if T: Send
 unsafe impl<T: Sync> Sync for Shared<T> {}

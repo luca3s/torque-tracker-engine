@@ -1,12 +1,10 @@
-use std::fmt::Debug;
 use std::ops::{AddAssign, IndexMut};
 
 use crate::audio_processing::playback::{PlaybackState, PlaybackStatus};
 use crate::audio_processing::sample::Interpolation;
 use crate::audio_processing::sample::SamplePlayer;
 use crate::audio_processing::Frame;
-use crate::manager::{OutputConfig, PlaybackSettings};
-use crate::project::note_event::NoteEvent;
+use crate::manager::{OutputConfig, ToWorkerMsg};
 use crate::project::song::Song;
 use cpal::{Sample, SampleFormat};
 use simple_left_right::Reader;
@@ -207,12 +205,4 @@ fn sine(output: &mut [[f32; 2]], sample_rate: f32) {
         *frame.index_mut(0) = value;
         *frame.index_mut(1) = value;
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum ToWorkerMsg {
-    Playback(PlaybackSettings),
-    StopPlayback,
-    PlayEvent(NoteEvent),
-    StopLiveNote,
 }

@@ -21,18 +21,11 @@
     clippy::missing_safety_doc,
     clippy::undocumented_unsafe_blocks
 )]
-
 #![no_std]
 
 extern crate alloc;
 
-use core::{
-    cell::UnsafeCell,
-    marker::PhantomData,
-    mem::MaybeUninit,
-    ops::Deref,
-    ptr::NonNull,
-};
+use core::{cell::UnsafeCell, marker::PhantomData, mem::MaybeUninit, ops::Deref, ptr::NonNull};
 
 use alloc::{boxed::Box, collections::vec_deque::VecDeque};
 
@@ -326,7 +319,8 @@ impl<T, O> WriteGuard<'_, T, O> {
         // SAFETY: When creating the writeguad it is checked that the reader doesnt have access to the same data
         // This function requires &mut self so there also isn't any ref created by writeguard.
         unsafe {
-            &mut *self.writer
+            &mut *self
+                .writer
                 .shared_ref()
                 .get_value(self.writer.write_ptr)
                 .get()

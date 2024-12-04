@@ -187,4 +187,68 @@ mod usage_test {
         assert_eq!(*reader.lock(), i32::default());
         assert_eq!(*writer.read(), i32::default());
     }
+
+    #[test]
+    #[should_panic]
+    fn panic_default() {
+        struct PanicOnDefault {}
+
+        impl Default for PanicOnDefault {
+            fn default() -> Self {
+                panic!()
+            }
+        }
+
+        impl Absorb<()> for PanicOnDefault {
+            fn absorb(&mut self, _: ()) {
+                panic!()
+            }
+        }
+
+        let mut writer: Writer<PanicOnDefault, ()> = Writer::default();
+        writer.try_lock().unwrap();
+    }
+
+    #[test]
+    #[should_panic]
+    fn panic_clone() {
+        struct PanicOnClone {}
+
+        impl Clone for PanicOnClone {
+            fn clone(&self) -> Self {
+                panic!()
+            }
+        }
+
+        impl Absorb<()> for PanicOnClone {
+            fn absorb(&mut self, _: ()) {
+                panic!()
+            }
+        }
+
+        let mut writer: Writer<PanicOnClone, ()> = Writer::new(PanicOnClone {});
+        writer.try_lock().unwrap();
+    }
+
+    #[test]
+    #[should_panic]
+    fn panic_absorb() {
+        #[derive(Default)]
+        struct Empty {}
+
+        impl Absorb<()> for Empty {
+            fn absorb(&mut self, _: ()) {
+                panic!()
+            }
+        }
+
+        let mut writer: Writer<Empty, ()> = Writer::default();
+        // make sure that
+        let mut reader = writer.build_reader().unwrap();
+        let read_lock = reader.lock();
+
+        let mut lock = writer.try_lock().unwrap();
+        lock.apply_op(());
+        _ = *read_lock;
+    }
 }

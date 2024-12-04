@@ -69,16 +69,22 @@ impl PlaybackPosition {
         }
     }
 
-    /// if settings is pattern always returns Some
+    /// if settings specify a pattern pattern always returns Some
     #[inline]
     fn new<const GC: bool>(settings: PlaybackSettings, song: &Song<GC>) -> Option<Self> {
         match settings {
-            PlaybackSettings::Pattern { idx, should_loop } => Some(Self {
-                order: None,
-                pattern: idx,
-                row: 0,
-                loop_active: should_loop,
-            }),
+            PlaybackSettings::Pattern { idx, should_loop } => {
+                if idx < song.patterns.len() {
+                    Some(Self {
+                        order: None,
+                        pattern: idx,
+                        row: 0,
+                        loop_active: should_loop,
+                    })
+                } else {
+                    None
+                }
+            }
             PlaybackSettings::Order {
                 mut idx,
                 should_loop,
@@ -102,9 +108,7 @@ pub struct PlaybackState<'sample, const GC: bool> {
     tick: u8,
     frame: u32,
 
-    // need to add more current_* stuff
-    current_song_speed: u8,
-
+    // add current state to support Effects
     samplerate: u32,
 
     voices: Box<[Option<SamplePlayer<'sample, GC>>; PlaybackState::<true>::VOICES]>,
@@ -151,7 +155,6 @@ macro_rules! new {
             is_done: false,
             tick: $song.initial_speed,
             frame: Self::frames_per_tick($samplerate, $song.initial_tempo),
-            current_song_speed: $song.initial_speed,
             $samplerate,
             voices: Box::new(std::array::from_fn(|_| None)),
         };
@@ -187,7 +190,6 @@ impl<const GC: bool> std::fmt::Debug for PlaybackState<'_, GC> {
         f.debug_struct("PlaybackState")
             .field("position", &self.position)
             .field("tick", &self.tick)
-            .field("current_song_speed", &self.current_song_speed)
             .field("frame", &self.frame)
             .field("samplerate", &self.samplerate)
             .finish()?;
@@ -205,14 +207,6 @@ pub struct PlaybackIter<'sample, 'song, 'playback, const INTERPOLATION: u8, cons
 }
 
 impl<const INTERPOLATION: u8, const GC: bool> PlaybackIter<'_, '_, '_, INTERPOLATION, GC> {
-    // pub fn check_position(&self) -> ControlFlow<()> {
-    //     match self.song.get_order(self.state.position.order) {
-    //         PatternOrder::Number(_) => ControlFlow::Continue(()),
-    //         PatternOrder::EndOfSong => ControlFlow::Break(()),
-    //         PatternOrder::SkipOrder => ControlFlow::Continue(()),
-    //     }
-    // }
-
     pub fn frames_per_tick(&self) -> u32 {
         PlaybackState::<GC>::frames_per_tick(self.state.samplerate, self.song.initial_tempo)
     }
@@ -311,7 +305,10 @@ impl<const INTERPOLATION: u8> Iterator for PlaybackIter<'static, '_, '_, INTERPO
     }
 }
 
-impl<'song, const INTERPOLATION: u8> PlaybackIter<'song, 'song, '_, INTERPOLATION, false> {
+impl<'sample, 'song, const INTERPOLATION: u8> PlaybackIter<'sample, 'song, '_, INTERPOLATION, false>
+where
+    'song: 'sample,
+{
     fn step(&mut self) {
         if self.step_generic() {
             self.create_sample_players();
@@ -322,8 +319,10 @@ impl<'song, const INTERPOLATION: u8> PlaybackIter<'song, 'song, '_, INTERPOLATIO
     }
 }
 
-impl<'song, const INTERPOLATION: u8> Iterator
-    for PlaybackIter<'song, 'song, '_, INTERPOLATION, false>
+impl<'sample, 'song, const INTERPOLATION: u8> Iterator
+    for PlaybackIter<'sample, 'song, '_, INTERPOLATION, false>
+where
+    'song: 'sample,
 {
     type Item = Frame;
 

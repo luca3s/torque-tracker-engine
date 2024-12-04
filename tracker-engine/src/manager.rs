@@ -1,230 +1,101 @@
 use std::{fmt::Debug, mem::ManuallyDrop, num::NonZeroU16, time::Duration};
 
-#[cfg(feature = "async")]
-use std::ops::ControlFlow;
-
-use basedrop::{Collector, Handle};
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use basedrop::Collector;
+use cpal::traits::{DeviceTrait, StreamTrait};
 use simple_left_right::{WriteGuard, Writer};
 
 use crate::{
     audio_processing::playback::PlaybackPosition,
-    live_audio::{LiveAudio, LiveAudioStatus, ToWorkerMsg},
-    project::song::{Song, SongOperation, ValidOperation},
+    live_audio::{LiveAudio, LiveAudioStatus},
+    project::{
+        note_event::NoteEvent,
+        song::{Song, SongOperation, ValidOperation},
+    },
 };
 
-/// If Async is enabled this allows putting the Collector into an Future and communicating with it
-enum ManageCollector {
-    /// .1: dropped allocs, that will soon be available to free
-    Internal(ManuallyDrop<Collector>, usize),
-    #[cfg(feature = "async")]
-    External(async_channel::Sender<usize>, Handle),
+#[derive(Debug, Clone, Copy)]
+pub enum ToWorkerMsg {
+    Playback(PlaybackSettings),
+    StopPlayback,
+    PlayEvent(NoteEvent),
+    StopLiveNote,
 }
 
-fn spin(mut f: impl FnMut() -> bool, time: Duration) {
-    let backoff = crossbeam_utils::Backoff::new();
-    loop {
-        if f() {
-            return;
-        }
-
-        if backoff.is_completed() {
-            std::thread::sleep(time);
-        } else {
-            backoff.snooze();
-        }
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
+pub enum SendResult {
+    Success,
+    BufferFull,
+    AudioInactive
 }
 
-#[cfg(feature = "async")]
-async fn async_spin(mut f: impl FnMut() -> bool, time: Duration) {
-    let backoff = crossbeam_utils::Backoff::new();
-    loop {
-        if f() {
-            return;
-        }
-
-        if backoff.is_completed() {
-            async_io::Timer::after(time).await;
-        } else {
-            backoff.snooze();
-        }
-    }
-}
-
-impl ManageCollector {
-    fn handle(&self) -> Handle {
+impl SendResult {
+    #[track_caller]
+    pub fn unwrap(self) {
         match self {
-            ManageCollector::Internal(collector, _) => collector.handle(),
-            #[cfg(feature = "async")]
-            ManageCollector::External(_, handle) => handle.clone(),
+            SendResult::Success => (),
+            SendResult::BufferFull => panic!("Buffer full"),
+            SendResult::AudioInactive => panic!("Audio inactive"),
         }
     }
 
-    fn collect(&mut self) {
-        #[allow(irrefutable_let_patterns)]
-        if let Self::Internal(ref mut collector, num) = self {
-            while collector.collect_one() {
-                *num -= 1;
-            }
-        }
-    }
-
-    fn increase_dropped(&mut self, frees: usize) {
-        match self {
-            ManageCollector::Internal(_, num) => *num += frees,
-            #[cfg(feature = "async")]
-            ManageCollector::External(channel, _) => {
-                _ = channel.send_blocking(frees);
-            }
-        }
-    }
-
-    #[cfg(feature = "async")]
-    async fn async_increase_dropped(&mut self, frees: usize) {
-        match self {
-            ManageCollector::Internal(_, num) => *num += frees,
-            ManageCollector::External(channel, _) => {
-                _ = channel.send(frees).await;
-            }
-        }
+    pub fn is_success(self) -> bool {
+        self == Self::Success
     }
 }
 
-/// If this is dropped it will leak all current and future sample data.
-/// To avoid this put it back inside the AudioManager
-/// Alternatively call `collect` until it returns `ControlFlow::Break`. Then dropping doesn't leak
-#[cfg(feature = "async")]
-pub struct CollectGarbage {
-    collector: ManuallyDrop<Collector>,
-    channel: Option<async_channel::Receiver<usize>>,
-    /// allocs that the AudioManager has removed from the song.
-    /// they will be added to the collector queue soon.
-    to_be_freed: usize,
+struct ActiveStream {
+    stream: cpal::Stream,
+    buffer_time: Duration,
+    send: rtrb::Producer<ToWorkerMsg>,
+    status: triple_buffer::Output<Option<LiveAudioStatus>>,
 }
 
-#[cfg(feature = "async")]
-impl CollectGarbage {
-    fn new(
-        collector: ManuallyDrop<Collector>,
-        channel: async_channel::Receiver<usize>,
-        to_be_freed: usize,
-    ) -> Self {
-        Self {
-            collector,
-            channel: Some(channel),
-            to_be_freed,
-        }
-    }
-
-    /// return value indicates if this function needs to be called again to ensure memory cleanup.
-    /// can be called in a loop. async sleeps internally
-    pub async fn collect(&mut self) -> ControlFlow<()> {
-        use futures_lite::future;
-
-        // 44.100 Hz / 256 Frames in a buffer = 172 buffers per second.
-        // => 5.8 ms for each buffer
-        const SLEEP: Duration = Duration::from_millis(20);
-
-        async fn recv_channel(this: &mut CollectGarbage) {
-            if let Some(ref channel) = this.channel {
-                match channel.recv().await {
-                    Ok(msg) => this.to_be_freed += msg,
-                    Err(_) => {
-                        this.to_be_freed = this.collector.alloc_count();
-                        this.channel = None;
-                    }
-                }
-            }
-        }
-
-        async fn sleep(sleep: Duration) {
-            async_io::Timer::after(sleep).await;
-        }
-
-        while self.collector.collect_one() {
-            self.to_be_freed -= 1;
-        }
-
-        if self.channel.is_some() {
-            if self.to_be_freed == 0 {
-                recv_channel(self).await;
-            } else {
-                future::race(sleep(SLEEP), recv_channel(self)).await;
-            }
-            ControlFlow::Continue(())
-        } else {
-            debug_assert_eq!(self.to_be_freed, self.collector.alloc_count());
-            if self.to_be_freed == 0 {
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
-            }
-        }
+impl Debug for ActiveStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ActiveStream").field("buffer_time", &self.buffer_time).field("send", &self.send).field("status", &self.status).finish()
     }
 }
 
+/// You will need to write your own spin loops.
+/// For that you can and maybe should use AudioManager::buffer_time.
 pub struct AudioManager {
     song: Writer<Song<true>, ValidOperation>,
-    gc: ManageCollector,
-    stream: Option<(cpal::Stream, rtrb::Producer<ToWorkerMsg>)>,
+    gc: std::mem::ManuallyDrop<Collector>,
+    stream: Option<ActiveStream>,
 }
 
 impl AudioManager {
-    // 44.100 Hz / 256 Frames in a buffer = 172 buffers per second.
-    // => 5.8 ms for each buffer
-    // should probably be replaced by a computation based on current settings
-    const SPIN_SLEEP: Duration = Duration::from_millis(6);
-
     pub fn new(song: Song<false>) -> Self {
         let gc = std::mem::ManuallyDrop::new(basedrop::Collector::new());
         let left_right = simple_left_right::Writer::new(song.to_gc(&gc.handle()));
 
         Self {
             song: left_right,
-            gc: ManageCollector::Internal(gc, 0),
+            gc,
             stream: None,
         }
     }
 
-    pub fn get_devices() -> cpal::OutputDevices<cpal::Devices> {
-        cpal::default_host().output_devices().unwrap()
-    }
-
-    pub fn default_device() -> Option<cpal::Device> {
-        cpal::default_host().default_output_device()
-    }
-
-    /// may block.
-    ///
-    /// Spinloops until no more ReadGuard to the old value exists
-    pub fn edit_song(&mut self) -> SongEdit<'_> {
-        spin(|| self.song.try_lock().is_some(), Self::SPIN_SLEEP);
-        SongEdit {
-            song: self.song.try_lock().unwrap(),
-            gc: &mut self.gc,
-        }
+    pub fn try_edit_song(&mut self) -> Option<SongEdit<'_>> {
+        self.song.try_lock().map(|song| SongEdit { song, gc: self.gc.handle() })
     }
 
     pub fn get_song(&self) -> &Song<true> {
         self.song.read()
     }
 
-    /// if the Gargage Collector was moved out, this does nothing
     pub fn collect_garbage(&mut self) {
         self.gc.collect();
     }
 
     /// If the config specifies more than two channels only the first two will be filled with audio.
     /// The rest gets silence.
-    /// audio_msg_config and msg_buffer_size allow you to configure the messages of the audio stream
-    /// depending on your application. When the channel is full messages get dropped.
-    /// currently panics when there is already a stream. needs better behaviour
     pub fn init_audio(
         &mut self,
         device: cpal::Device,
         config: OutputConfig,
-    ) -> Result<triple_buffer::Output<Option<LiveAudioStatus>>, cpal::BuildStreamError> {
+    ) -> Result<(), cpal::BuildStreamError> {
         const TO_WORKER_CAPACITY: usize = 5;
 
         let from_worker = triple_buffer::triple_buffer(&None);
@@ -240,102 +111,63 @@ impl AudioManager {
             |err| println!("{err}"),
             None,
         )?;
+        let buffer_time =
+            Duration::from_millis((config.buffer_size * 1000 / config.buffer_size).into());
 
         stream.play().unwrap();
 
-        self.stream = Some((stream, to_worker.0));
+        self.stream = Some(ActiveStream { stream, buffer_time, send: to_worker.0, status: from_worker.1 });
 
-        Ok(from_worker.1)
+        Ok(())
     }
 
-    /// pauses the audio thread. only works on some platforms (look at cpal docs)
+    /// pauses the audio. only works on some platforms (look at cpal docs)
     pub fn pause_audio(&mut self) {
-        if let Some((stream, _)) = &mut self.stream {
-            stream.pause().unwrap();
+        if let Some(stream) = &mut self.stream {
+            stream.stream.pause().unwrap();
         }
     }
 
-    /// resume the audio thread. playback is in the same state as before the pause. (only available on some platforms, see cpal docs for stream.pause())
+    /// resume the audio. playback is in the same state as before the pause. (only available on some platforms, see cpal docs for stream.pause())
     pub fn resume_audio(&self) {
-        if let Some((stream, _)) = &self.stream {
-            stream.play().unwrap();
+        if let Some(stream) = &self.stream {
+            stream.stream.play().unwrap();
         }
     }
 
-    pub fn send_worker_msg(&mut self, msg: ToWorkerMsg) {
-        if let Some((_, channel)) = &mut self.stream {
-            spin(|| channel.push(msg).is_ok(), Self::SPIN_SLEEP);
-        }
-    }
-
-    pub fn deinit_audio(&mut self) {
-        if let Some((stream, _)) = self.stream.take() {
-            self.send_worker_msg(ToWorkerMsg::StopPlayback);
-            self.send_worker_msg(ToWorkerMsg::StopLiveNote);
-            drop(stream);
-
-            self.gc.collect();
-        }
-    }
-}
-
-// needs to be kept in sync with the sync (haha) version of the functions
-#[cfg(feature = "async")]
-impl AudioManager {
-    pub async fn async_send_worker_msg(&mut self, msg: ToWorkerMsg) {
-        if let Some((_, channel)) = &mut self.stream {
-            async_spin(|| channel.push(msg).is_ok(), Self::SPIN_SLEEP).await;
-        }
-    }
-
-    pub async fn async_deinit_audio(&mut self) {
-        if let Some((stream, _)) = self.stream.take() {
-            self.async_send_worker_msg(ToWorkerMsg::StopPlayback).await;
-            self.async_send_worker_msg(ToWorkerMsg::StopLiveNote).await;
-            drop(stream);
-            self.collect_garbage();
-        }
-    }
-
-    /// Equivalent to ´edit_song´, except that the sleeping in the spin loop is done with async.
-    /// This allows using it inside async functin without blocking the runtime
-    pub async fn async_edit_song(&mut self) -> SongEdit<'_> {
-        let handle = match &self.gc {
-            ManageCollector::Internal(collector, _) => collector.handle(),
-            ManageCollector::External(_, handle) => handle.clone(),
-        };
-
-        async_spin(|| self.song.try_lock().is_some(), Self::SPIN_SLEEP).await;
-        SongEdit {
-            song: self.song.try_lock().unwrap(),
-            gc: &mut self.gc,
-        }
-    }
-
-    /// returns None if the garbage collector is already external
-    pub fn get_garbage_collector(&mut self) -> Option<CollectGarbage> {
-        if let ManageCollector::Internal(ref mut collector, num) = self.gc {
-            let handle = collector.handle();
-            let (sender, recv) = async_channel::unbounded();
-            // SAFETY: Value is overwritten in the next line and not being read.
-            let collector = unsafe { ManuallyDrop::take(collector) };
-            self.gc = ManageCollector::External(sender, handle);
-
-            let external = CollectGarbage::new(ManuallyDrop::new(collector), recv, num);
-            Some(external)
+    /// None if there is no active stream.
+    /// Some(Err) if the buffer is full.
+    pub fn try_msg_worker(&mut self, msg: ToWorkerMsg) -> SendResult {
+        if let Some(stream) = &mut self.stream {
+            match stream.send.push(msg) {
+                Ok(_) => SendResult::Success,
+                Err(_) => SendResult::BufferFull,
+            }
         } else {
-            None
+            SendResult::AudioInactive
         }
     }
 
-    /// makes the garbage collector internal again.
-    pub fn insert_garbage_collector(&mut self, gc: CollectGarbage) {
-        let CollectGarbage {
-            collector,
-            to_be_freed,
-            channel: _,
-        } = gc;
-        self.gc = ManageCollector::Internal(collector, to_be_freed);
+    /// closes the audio backend.
+    pub fn deinit_audio(&mut self) {
+        self.stream = None;
+        self.gc.collect();
+    }
+
+    /// last playback status sent by the audio worker
+    pub fn playback_status(&mut self) -> Option<&LiveAudioStatus> {
+        self.stream
+            .as_mut()
+            .and_then(|s| s.status.read().as_ref())
+    }
+
+    /// Some if a stream is active.
+    /// Returns the approximate time it takes to process an audio buffer based on the used settings.
+    /// 
+    /// Useful for implementing spin_loops on collect_garbage or for locking a SongEdit as every time a buffer is finished
+    /// garbage could be releases and a lock could be made available
+    pub fn buffer_time(&self) -> Option<Duration> {
+        self.stream.as_ref().map(|s| s.buffer_time)
     }
 }
 
@@ -343,7 +175,7 @@ impl Debug for AudioManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AudioManager")
             .field("song", &self.song)
-            .field("stream", &self.stream.as_ref().map(|(_, send)| send))
+            .field("stream", &self.stream)
             .finish()
     }
 }
@@ -352,22 +184,20 @@ impl Drop for AudioManager {
     /// if this panics the drop implementation isn't right and the Audio Callback isn't cleaned up properly
     fn drop(&mut self) {
         self.deinit_audio();
-        let mut song = self.edit_song();
+        let mut song = self.try_edit_song().unwrap();
         for i in 0..Song::<true>::MAX_SAMPLES {
             song.apply_operation(SongOperation::RemoveSample(i))
                 .unwrap();
         }
         song.finish();
         // lock it once more to ensure that the changes were propagated
-        self.edit_song();
-        // due to async feature
-        #[allow(irrefutable_let_patterns)]
-        if let ManageCollector::Internal(ref mut collector, _) = self.gc {
-            let mut gc = unsafe { ManuallyDrop::take(collector) };
-            gc.collect();
-            if gc.try_cleanup().is_err() {
-                eprintln!("Sample Data was leaked")
-            }
+        self.try_edit_song().unwrap();
+        let mut gc = unsafe { ManuallyDrop::take(&mut self.gc) };
+        gc.collect();
+        if let Err(gc) = gc.try_cleanup() {
+            assert_eq!(gc.handle_count(), 0, "Bug, as the only time i have a handle is inside a SongEdit, which borrows Manager anyways");
+            // to avoid this from happening close the audio before dropping the audio manager
+            eprintln!("Audio thread cleanup didn't run before dropping the AudioManager. {} samples were leaked", gc.alloc_count())
         }
     }
 }
@@ -381,7 +211,7 @@ impl Drop for AudioManager {
 // need manuallyDrop because i need consume on drop behaviour
 pub struct SongEdit<'a> {
     song: WriteGuard<'a, Song<true>, ValidOperation>,
-    gc: &'a mut ManageCollector,
+    gc: basedrop::Handle,
 }
 
 impl Debug for SongEdit<'_> {
@@ -394,10 +224,7 @@ impl Debug for SongEdit<'_> {
 
 impl SongEdit<'_> {
     pub fn apply_operation(&mut self, op: SongOperation) -> Result<(), SongOperation> {
-        let valid_operation = ValidOperation::new(op, &self.gc.handle(), self.song())?;
-        if valid_operation.drops_sample(self.song()) {
-            self.gc.increase_dropped(1);
-        }
+        let valid_operation = ValidOperation::new(op, &self.gc, self.song())?;
         self.song.apply_op(valid_operation);
         Ok(())
     }

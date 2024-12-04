@@ -224,6 +224,7 @@ impl ValidOperation {
         }
     }
 
+    // probably unnecessary
     pub(crate) fn drops_sample(&self, song: &Song<true>) -> bool {
         if let Self::SetSample(idx, _, _) = self {
             if song.samples[*idx].is_some() {

@@ -1,9 +1,8 @@
 use std::{num::NonZeroU16, time::Duration};
 
-use cpal::{traits::DeviceTrait, Sample};
+use cpal::{traits::{DeviceTrait, HostTrait}, Sample};
 use impulse_engine::{
-    live_audio::ToWorkerMsg,
-    manager::{AudioManager, OutputConfig, PlaybackSettings},
+    manager::{AudioManager, OutputConfig, PlaybackSettings, ToWorkerMsg},
     project::{
         event_command::NoteCommand,
         note_event::{Note, NoteEvent, VolumeEffect},
@@ -30,7 +29,7 @@ fn main() {
         ..Default::default()
     };
 
-    let mut song = manager.edit_song();
+    let mut song = manager.try_edit_song().unwrap();
     song.apply_operation(SongOperation::SetSample(0, meta, sample))
         .unwrap();
     for i in 0..12 {
@@ -58,7 +57,8 @@ fn main() {
     song.finish();
     dbg!(manager.get_song());
 
-    let default_device = AudioManager::default_device().unwrap();
+    let host = cpal::default_host();
+    let default_device = host.default_output_device().unwrap();
     let default_config = default_device.default_output_config().unwrap();
     println!("default config {:?}", default_config);
     println!("device: {:?}", default_device.name());
@@ -68,11 +68,11 @@ fn main() {
         sample_rate: default_config.sample_rate().0,
     };
 
-    let mut recv = manager.init_audio(default_device, config).unwrap();
+    manager.init_audio(default_device, config).unwrap();
 
-    manager.send_worker_msg(ToWorkerMsg::Playback(PlaybackSettings::default()));
+    manager.try_msg_worker(ToWorkerMsg::Playback(PlaybackSettings::default()));
 
     std::thread::sleep(Duration::from_secs(5));
     manager.deinit_audio();
-    println!("{:?}", recv.read())
+    println!("{:?}", manager.playback_status())
 }
