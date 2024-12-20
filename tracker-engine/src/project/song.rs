@@ -1,13 +1,11 @@
 use std::array;
 use std::fmt::{Debug, Formatter};
-use std::ops::Deref;
 
 use crate::channel::Pan;
 use crate::file::impulse_format;
 use crate::file::impulse_format::header::PatternOrder;
-use crate::sample::{Sample, SampleData, SampleMetaData};
-use basedrop::Shared;
-
+use crate::manager::Collector;
+use crate::sample::{OwnedSample, Sample, SampleMetaData, SharedSample};
 use super::pattern::{Pattern, PatternOperation};
 
 /// Playback Speed in Schism is determined by two values: Tempo and Speed.
@@ -103,7 +101,7 @@ impl<const GC: bool> Song<GC> {
 impl Song<false> {
     // to avoid cloning patterns
     #[expect(clippy::wrong_self_convention)]
-    pub(crate) fn to_gc(self, handle: &basedrop::Handle) -> Song<true> {
+    pub(crate) fn to_gc(self, handle: &mut Collector) -> Song<true> {
         Song {
             global_volume: self.global_volume,
             mix_volume: self.mix_volume,
@@ -117,36 +115,37 @@ impl Song<false> {
             pan: self.pan,
             samples: self
                 .samples
-                .map(|s| s.map(|(meta, data)| (meta, data.to_gc(handle)))),
+                // .map(|s| s.map(|(meta, data)| (meta, data.to_gc(handle)))),
+                .map(|s| s.map(|(meta, data)| (meta, Sample::from_owned(data, handle)))),
         }
     }
 }
 
-impl From<Song<true>> for Song<false> {
-    fn from(value: Song<true>) -> Self {
-        value.to_owned()
-    }
-}
+// impl From<Song<true>> for Song<false> {
+//     fn from(value: Song<true>) -> Self {
+//         value.to_owned()
+//     }
+// }
 
-impl Song<true> {
-    pub fn to_owned(self) -> Song<false> {
-        Song {
-            global_volume: self.global_volume,
-            mix_volume: self.mix_volume,
-            initial_speed: self.initial_speed,
-            initial_tempo: self.initial_tempo,
-            pan_separation: self.pan_separation,
-            pitch_wheel_depth: self.pitch_wheel_depth,
-            patterns: self.patterns,
-            pattern_order: self.pattern_order,
-            volume: self.volume,
-            pan: self.pan,
-            samples: self
-                .samples
-                .map(|option| option.map(|(meta, data)| (meta, data.to_owned()))),
-        }
-    }
-}
+// impl Song<true> {
+//     pub fn to_owned(self) -> Song<false> {
+//         Song {
+//             global_volume: self.global_volume,
+//             mix_volume: self.mix_volume,
+//             initial_speed: self.initial_speed,
+//             initial_tempo: self.initial_tempo,
+//             pan_separation: self.pan_separation,
+//             pitch_wheel_depth: self.pitch_wheel_depth,
+//             patterns: self.patterns,
+//             pattern_order: self.pattern_order,
+//             volume: self.volume,
+//             pan: self.pan,
+//             samples: self
+//                 .samples
+//                 .map(|option| option.map(|(meta, data)| (meta, data.to_owned()))),
+//         }
+//     }
+// }
 
 impl<const GC: bool> Default for Song<GC> {
     fn default() -> Self {
@@ -171,18 +170,18 @@ impl<const GC: bool> Default for Song<GC> {
 pub enum SongOperation {
     SetVolume(usize, u8),
     SetPan(usize, Pan),
-    SetSample(usize, SampleMetaData, SampleData),
+    SetSample(usize, SampleMetaData, OwnedSample),
     RemoveSample(usize),
     PatternOperation(usize, PatternOperation),
     SetOrder(usize, PatternOrder),
 }
 
 /// keep in sync with SongOperation
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) enum ValidOperation {
     SetVolume(usize, u8),
     SetPan(usize, Pan),
-    SetSample(usize, SampleMetaData, Shared<SampleData>),
+    SetSample(usize, SampleMetaData, SharedSample),
     RemoveSample(usize),
     PatternOperation(usize, PatternOperation),
     SetOrder(usize, PatternOrder),
@@ -191,7 +190,7 @@ pub(crate) enum ValidOperation {
 impl ValidOperation {
     pub(crate) fn new(
         op: SongOperation,
-        handle: &basedrop::Handle,
+        handle: &mut Collector,
         song: &Song<true>,
     ) -> Result<ValidOperation, SongOperation> {
         let valid = match op {
@@ -211,7 +210,7 @@ impl ValidOperation {
                 SongOperation::SetVolume(c, v) => Self::SetVolume(c, v),
                 SongOperation::SetPan(c, pan) => Self::SetPan(c, pan),
                 SongOperation::SetSample(i, sample_meta_data, sample_data) => {
-                    Self::SetSample(i, sample_meta_data, Shared::new(handle, sample_data))
+                    Self::SetSample(i, sample_meta_data, handle.add_sample(sample_data))
                 }
                 SongOperation::RemoveSample(i) => Self::RemoveSample(i),
                 SongOperation::PatternOperation(i, pattern_operation) => {
@@ -221,48 +220,6 @@ impl ValidOperation {
             })
         } else {
             Err(op)
-        }
-    }
-
-    // probably unnecessary
-    pub(crate) fn drops_sample(&self, song: &Song<true>) -> bool {
-        if let Self::SetSample(idx, _, _) = self {
-            if song.samples[*idx].is_some() {
-                // a sample is replaced
-                true
-            } else {
-                // there is no sample at the place of the new sample, so no sample gets dropped
-                false
-            }
-        } else {
-            // the operation doesn't set a sample
-            false
-        }
-    }
-}
-
-impl Debug for ValidOperation {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::SetVolume(arg0, arg1) => {
-                f.debug_tuple("SetVolume").field(arg0).field(arg1).finish()
-            }
-            Self::SetPan(arg0, arg1) => f.debug_tuple("SetPan").field(arg0).field(arg1).finish(),
-            Self::SetSample(arg0, arg1, arg2) => f
-                .debug_tuple("SetSample")
-                .field(arg0)
-                .field(arg1)
-                .field(arg2.deref())
-                .finish(),
-            Self::RemoveSample(arg0) => f.debug_tuple("RemoveSample").field(arg0).finish(),
-            Self::PatternOperation(arg0, arg1) => f
-                .debug_tuple("PatternOperation")
-                .field(arg0)
-                .field(arg1)
-                .finish(),
-            Self::SetOrder(arg0, arg1) => {
-                f.debug_tuple("SetOrder").field(arg0).field(arg1).finish()
-            }
         }
     }
 }

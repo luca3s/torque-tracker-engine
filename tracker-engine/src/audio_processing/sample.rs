@@ -1,8 +1,8 @@
-use std::ops::{ControlFlow, Deref};
+use std::ops::ControlFlow;
 
 use crate::{
     project::note_event::Note,
-    sample::{SampleData, SampleMetaData, SampleRef},
+    sample::{self, SampleHandle, SampleMetaData},
 };
 
 use super::Frame;
@@ -25,7 +25,7 @@ impl Interpolation {
     pub const fn pad_needed(&self) -> usize {
         match self {
             Interpolation::Nearest => 1,
-            Interpolation::Linear => todo!(),
+            Interpolation::Linear => 1,
         }
     }
 
@@ -39,13 +39,8 @@ impl Interpolation {
 }
 
 #[derive(Debug)]
-enum RealTimeEffectState {
-    PitchSlide,
-}
-
-#[derive(Debug)]
 pub struct SamplePlayer<'sample, const GC: bool> {
-    sample: SampleRef<'sample, GC>,
+    sample: SampleHandle<'sample, GC>,
     meta_data: SampleMetaData,
 
     note: Note,
@@ -55,7 +50,7 @@ pub struct SamplePlayer<'sample, const GC: bool> {
     // stored as fixed point data: usize + f32
     // f32 ranges 0..1
     position: (usize, f32),
-    is_done: bool,
+    // is_done: bool,
 
     out_rate: u32,
     // how much the position is advanced for each output sample.
@@ -65,15 +60,14 @@ pub struct SamplePlayer<'sample, const GC: bool> {
 
 impl<'sample, const GC: bool> SamplePlayer<'sample, GC> {
     pub fn new(
-        sample: (SampleMetaData, SampleRef<'sample, GC>),
+        sample: (SampleMetaData, SampleHandle<'sample, GC>),
         out_rate: u32,
         note: Note,
     ) -> Self {
         Self {
             sample: sample.1,
             meta_data: sample.0,
-            position: (SampleData::PAD_SIZE_EACH, 0.),
-            is_done: false,
+            position: (sample::PAD_SIZE_EACH, 0.),
             out_rate,
             step_size: Self::compute_step_size(
                 sample.0.sample_rate,
@@ -85,12 +79,8 @@ impl<'sample, const GC: bool> SamplePlayer<'sample, GC> {
         }
     }
 
-    pub fn is_done(&self) -> bool {
-        self.is_done
-    }
-
-    fn check_position(&self) -> ControlFlow<()> {
-        if self.position.0 > self.sample.deref().len_with_pad() - SampleData::PAD_SIZE_EACH {
+    pub fn check_position(&self) -> ControlFlow<()> {
+        if self.position.0 > self.sample.get_ref().len_with_pad() - sample::PAD_SIZE_EACH {
             ControlFlow::Break(())
         } else {
             ControlFlow::Continue(())
@@ -132,11 +122,6 @@ impl<'sample, const GC: bool> SamplePlayer<'sample, GC> {
         let floor = self.position.1.trunc();
         self.position.1 -= floor;
         self.position.0 += floor as usize;
-
-        // check if end of sample was reached.
-        if self.position.0 > self.sample.deref().len_with_pad() - SampleData::PAD_SIZE_EACH {
-            self.is_done = true
-        }
     }
 
     #[inline]
@@ -151,52 +136,37 @@ impl<'sample, const GC: bool> SamplePlayer<'sample, GC> {
         // const block allows turning an invalid u8 into compile time error
         let interpolation = const { Interpolation::from_u8(INTERPOLATION) };
 
-        match interpolation {
-            Interpolation::Nearest => self.next_nearest(),
-            Interpolation::Linear => self.next_linear(),
-        }
-    }
-
-    pub fn next_linear(&mut self) -> Option<Frame> {
-        if self.is_done {
+        if self.check_position().is_break() {
             return None;
         }
 
-        let out = match self.sample.deref() {
-            SampleData::Mono(mono) => {
-                let diff = mono[self.position.0 + 1] - mono[self.position.0];
-                Frame::from((diff * self.position.1) + mono[self.position.0])
-            }
-            SampleData::Stereo(stereo) => {
-                let diff =
-                    Frame::from(stereo[self.position.0 + 1]) - Frame::from(stereo[self.position.0]);
-
-                (diff * self.position.1) + Frame::from(stereo[self.position.0])
-            }
+        let out = match interpolation {
+            Interpolation::Nearest => self.compute_nearest(),
+            Interpolation::Linear => self.compute_linear(),
         };
 
         self.step();
         Some(out)
     }
 
-    pub fn next_nearest(&mut self) -> Option<Frame> {
-        if self.is_done {
-            return None;
-        }
+    fn compute_linear(&mut self) -> Frame {
+        self.sample.get_ref().compute(
+            |data: [f32; 2]| {
+                let diff = data[1] - data[0];
+                (diff * self.position.1) + data[0]
+            },
+            self.position.0
+        )
+    }
 
+    fn compute_nearest(&mut self) -> Frame {
         let load_idx = if self.position.1 < 0.5 {
             self.position.0
         } else {
             self.position.0 + 1
         };
 
-        let out = match self.sample.deref() {
-            SampleData::Mono(mono) => mono[load_idx].into(),
-            SampleData::Stereo(stereo) => stereo[load_idx].into(),
-        };
-
-        self.step();
-        Some(out)
+        self.sample.get_ref().index(load_idx)
     }
 }
 

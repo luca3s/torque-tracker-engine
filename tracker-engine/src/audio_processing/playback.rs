@@ -249,7 +249,7 @@ macro_rules! create_sample_players {
         {
             if let Some((meta, sample)) = &$sel.song.samples[usize::from(event.sample_instr)] {
                 let player =
-                    SamplePlayer::new((*meta, sample.get_ref()), $sel.state.samplerate, event.note);
+                    SamplePlayer::new((*meta, sample.get_handle()), $sel.state.samplerate, event.note);
                 $sel.state.voices[usize::from(positions.channel)] = Some(player);
             }
         }
@@ -269,13 +269,20 @@ macro_rules! next {
             .iter_mut()
             .flat_map(|channel| {
                 if let Some(voice) = channel {
-                    match voice.next::<INTERPOLATION>() {
-                        Some(frame) => Some(frame),
-                        None => {
-                            *channel = None;
-                            None
-                        }
+                    // this logic frees the voices as soon as possible
+                    let out = voice.next::<INTERPOLATION>().unwrap();
+                    if voice.check_position().is_break() {
+                        *channel = None;
                     }
+                    Some(out)
+                    // this logic frees the voices one frame later than possible
+                    // match voice.next::<INTERPOLATION>() {
+                    //     Some(frame) => Some(frame),
+                    //     None => {
+                    //         *channel = None;
+                    //         None
+                    //     }
+                    // }
                 } else {
                     None
                 }

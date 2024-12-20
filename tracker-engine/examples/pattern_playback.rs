@@ -1,6 +1,6 @@
 use std::{num::NonZeroU16, time::Duration};
 
-use cpal::{traits::{DeviceTrait, HostTrait}, Sample};
+use cpal::traits::{DeviceTrait, HostTrait};
 use impulse_engine::{
     manager::{AudioManager, OutputConfig, PlaybackSettings, ToWorkerMsg},
     project::{
@@ -9,7 +9,7 @@ use impulse_engine::{
         pattern::{InPatternPosition, PatternOperation},
         song::{Song, SongOperation},
     },
-    sample::{SampleData, SampleMetaData},
+    sample::{OwnedSample, SampleMetaData},
 };
 
 fn main() {
@@ -19,10 +19,11 @@ fn main() {
     let spec = reader.spec();
     println!("sample specs: {spec:?}");
     assert!(spec.channels == 1);
-    let sample: SampleData = reader
+    let sample_data: Box<[i16]> = reader
         .samples::<i16>()
-        .map(|result| f32::from_sample(result.unwrap()))
+        .map(|result| result.unwrap())
         .collect();
+    let sample = OwnedSample::MonoI16(sample_data);
     let meta = SampleMetaData {
         sample_rate: spec.sample_rate,
         base_note: Note::new(64).unwrap(),
@@ -63,14 +64,14 @@ fn main() {
     println!("default config {:?}", default_config);
     println!("device: {:?}", default_device.name());
     let config = OutputConfig {
-        buffer_size: 15,
+        buffer_size: 32,
         channel_count: NonZeroU16::new(2).unwrap(),
         sample_rate: default_config.sample_rate().0,
     };
 
     manager.init_audio(default_device, config).unwrap();
 
-    manager.try_msg_worker(ToWorkerMsg::Playback(PlaybackSettings::default()));
+    manager.try_msg_worker(ToWorkerMsg::Playback(PlaybackSettings::default())).unwrap();
 
     std::thread::sleep(Duration::from_secs(5));
     manager.deinit_audio();

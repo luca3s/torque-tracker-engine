@@ -1,6 +1,5 @@
-use std::{fmt::Debug, mem::ManuallyDrop, num::NonZeroU16, time::Duration};
+use std::{fmt::Debug, num::NonZeroU16, sync::Arc, time::Duration};
 
-use basedrop::Collector;
 use cpal::traits::{DeviceTrait, StreamTrait};
 use simple_left_right::{WriteGuard, Writer};
 
@@ -10,7 +9,7 @@ use crate::{
     project::{
         note_event::NoteEvent,
         song::{Song, SongOperation, ValidOperation},
-    },
+    }, sample::{OwnedSample, SharedSample},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -48,7 +47,7 @@ struct ActiveStream {
     stream: cpal::Stream,
     buffer_time: Duration,
     send: rtrb::Producer<ToWorkerMsg>,
-    status: triple_buffer::Output<Option<LiveAudioStatus>>,
+    status: triple_buffer::Output<LiveAudioStatus>,
 }
 
 impl Debug for ActiveStream {
@@ -57,18 +56,58 @@ impl Debug for ActiveStream {
     }
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct Collector {
+    samples: Vec<SharedSample>,
+}
+
+impl Collector {
+    pub fn add_sample(&mut self, sample: OwnedSample) -> SharedSample {
+        let sample = match sample {
+            OwnedSample::MonoF32(data) => SharedSample::MonoF32(data.into()),
+            OwnedSample::MonoI16(data) => SharedSample::MonoI16(data.into()),
+            OwnedSample::MonoI8(data) => SharedSample::MonoI8(data.into()),
+            OwnedSample::StereoF32(data) => SharedSample::StereoF32(data.into()),
+            OwnedSample::StereoI16(data) => SharedSample::StereoI16(data.into()),
+            OwnedSample::StereoI8(data) => SharedSample::StereoI8(data.into()),
+        };
+
+        self.samples.push(sample.clone());
+        // debug_assert!(Arc::strong_count(sample) == 2);
+        sample
+    }
+
+    fn collect(&mut self) {
+        self.samples.retain(|s| {
+            // only look at strong count as weak pointers are not used
+            match s {
+                SharedSample::MonoF32(arc) => Arc::strong_count(arc) != 1,
+                SharedSample::MonoI16(arc) => Arc::strong_count(arc) != 1,
+                SharedSample::MonoI8(arc) => Arc::strong_count(arc) != 1,
+                SharedSample::StereoF32(arc) => Arc::strong_count(arc) != 1,
+                SharedSample::StereoI16(arc) => Arc::strong_count(arc) != 1,
+                SharedSample::StereoI8(arc) => Arc::strong_count(arc) != 1,
+            }
+        });
+    }
+
+    fn sample_count(&self) -> usize {
+        self.samples.len()
+    }
+}
+
 /// You will need to write your own spin loops.
 /// For that you can and maybe should use AudioManager::buffer_time.
 pub struct AudioManager {
     song: Writer<Song<true>, ValidOperation>,
-    gc: std::mem::ManuallyDrop<Collector>,
+    gc: Collector,
     stream: Option<ActiveStream>,
 }
 
 impl AudioManager {
     pub fn new(song: Song<false>) -> Self {
-        let gc = std::mem::ManuallyDrop::new(basedrop::Collector::new());
-        let left_right = simple_left_right::Writer::new(song.to_gc(&gc.handle()));
+        let mut gc = Collector::default();
+        let left_right = simple_left_right::Writer::new(song.to_gc(&mut gc));
 
         Self {
             song: left_right,
@@ -78,7 +117,7 @@ impl AudioManager {
     }
 
     pub fn try_edit_song(&mut self) -> Option<SongEdit<'_>> {
-        self.song.try_lock().map(|song| SongEdit { song, gc: self.gc.handle() })
+        self.song.try_lock().map(|song| SongEdit { song, gc: &mut self.gc })
     }
 
     pub fn get_song(&self) -> &Song<true> {
@@ -98,7 +137,7 @@ impl AudioManager {
     ) -> Result<(), cpal::BuildStreamError> {
         const TO_WORKER_CAPACITY: usize = 5;
 
-        let from_worker = triple_buffer::triple_buffer(&None);
+        let from_worker = triple_buffer::triple_buffer(&(None, None));
         let to_worker = rtrb::RingBuffer::new(TO_WORKER_CAPACITY);
         let reader = self.song.build_reader().unwrap();
 
@@ -156,9 +195,7 @@ impl AudioManager {
 
     /// last playback status sent by the audio worker
     pub fn playback_status(&mut self) -> Option<&LiveAudioStatus> {
-        self.stream
-            .as_mut()
-            .and_then(|s| s.status.read().as_ref())
+        self.stream.as_mut().map(|s| s.status.read())
     }
 
     /// Some if a stream is active.
@@ -168,15 +205,6 @@ impl AudioManager {
     /// garbage could be releases and a lock could be made available
     pub fn buffer_time(&self) -> Option<Duration> {
         self.stream.as_ref().map(|s| s.buffer_time)
-    }
-}
-
-impl Debug for AudioManager {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AudioManager")
-            .field("song", &self.song)
-            .field("stream", &self.stream)
-            .finish()
     }
 }
 
@@ -192,12 +220,11 @@ impl Drop for AudioManager {
         song.finish();
         // lock it once more to ensure that the changes were propagated
         self.try_edit_song().unwrap();
-        let mut gc = unsafe { ManuallyDrop::take(&mut self.gc) };
-        gc.collect();
-        if let Err(gc) = gc.try_cleanup() {
-            assert_eq!(gc.handle_count(), 0, "Bug, as the only time i have a handle is inside a SongEdit, which borrows Manager anyways");
-            // to avoid this from happening close the audio before dropping the audio manager
-            eprintln!("Audio thread cleanup didn't run before dropping the AudioManager. {} samples were leaked", gc.alloc_count())
+        self.gc.collect();
+        // provide a diagnostic when memory is leaked
+        let count = self.gc.sample_count();
+        if count != 0 {
+            eprintln!("Audio thread cleanup didn't run before dropping the AudioManager. {} samples were leaked", count)
         }
     }
 }
@@ -207,24 +234,15 @@ impl Drop for AudioManager {
 ///
 /// With this you can load the full song without ever playing a half initialised state
 /// when doing mulitple operations this object should be kept as it is
-// should do all the verfication of
-// need manuallyDrop because i need consume on drop behaviour
+#[derive(Debug)]
 pub struct SongEdit<'a> {
     song: WriteGuard<'a, Song<true>, ValidOperation>,
-    gc: basedrop::Handle,
-}
-
-impl Debug for SongEdit<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SongEdit")
-            .field("song", &self.song)
-            .finish()
-    }
+    gc: &'a mut Collector,
 }
 
 impl SongEdit<'_> {
     pub fn apply_operation(&mut self, op: SongOperation) -> Result<(), SongOperation> {
-        let valid_operation = ValidOperation::new(op, &self.gc, self.song())?;
+        let valid_operation = ValidOperation::new(op, self.gc, self.song.read())?;
         self.song.apply_op(valid_operation);
         Ok(())
     }

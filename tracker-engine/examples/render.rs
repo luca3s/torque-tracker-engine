@@ -8,10 +8,8 @@ use impulse_engine::{
         pattern::InPatternPosition,
         song::Song,
     },
-    sample::{Sample, SampleData, SampleMetaData},
+    sample::{OwnedSample, Sample, SampleMetaData},
 };
-
-use cpal::Sample as DASPSample;
 
 fn main() {
     let mut reader =
@@ -19,10 +17,13 @@ fn main() {
     let spec = reader.spec();
     println!("sample specs: {spec:?}");
     assert!(spec.channels == 1);
-    let sample: SampleData = reader
+    let sample_data: Box<[i16]> = reader
         .samples::<i16>()
-        .map(|result| f32::from_sample(result.unwrap()))
+        // .map(|result| f32::from_sample(result.unwrap()))
+        .map(|result| result.unwrap())
         .collect();
+    let sample = OwnedSample::MonoI16(sample_data);
+
     let meta = SampleMetaData {
         sample_rate: spec.sample_rate,
         ..Default::default()

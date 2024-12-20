@@ -12,8 +12,9 @@ keywords = ["audio"]
 categories = ["audio"]
 
 [dependencies]
-# added a couple features to it. pull requests don' really progress
-basedrop = "0.1.2" # miri reports Race Condition. Wait for fix or pull inside
+# added a couple features to it. pull requests don't really progress
+# basedrop = "0.1.2" # miri reports Race Condition. Wait for fix or pull inside
+# basedrop = { git = "https://github.com/luca3s/basedrop/", branch = "all-patches"}
 cpal = "0.15.3"
 rtrb = "0.3.1"
 simple-left-right = { path = "../simple-left-right" }

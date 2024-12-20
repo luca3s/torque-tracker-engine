@@ -1,4 +1,4 @@
-use std::ops::IndexMut;
+use std::{array, ops::IndexMut};
 
 use cpal::Sample;
 
@@ -51,7 +51,7 @@ impl std::ops::Mul<f32> for Frame {
 
 impl std::ops::AddAssign<Frame> for f32 {
     fn add_assign(&mut self, rhs: Frame) {
-        *self += rhs.to_mono()
+        *self += rhs.sum_to_mono()
     }
 }
 
@@ -73,10 +73,47 @@ impl From<f32> for Frame {
     }
 }
 
+impl From<i16> for Frame {
+    fn from(value: i16) -> Self {
+        let value = f32::from_sample(value);
+        Self([value, value])
+    }
+}
+
+impl From<[i16; 2]> for Frame {
+    fn from(value: [i16; 2]) -> Self {
+        Self([f32::from_sample(value[0]), f32::from_sample(value[1])])
+    }
+}
+
+impl From<i8> for Frame {
+    fn from(value: i8) -> Self {
+        let value = f32::from_sample(value);
+        Self([value, value])
+    }
+}
+
+impl From<[i8; 2]> for Frame {
+    fn from(value: [i8; 2]) -> Self {
+        Self([f32::from_sample(value[0]), f32::from_sample(value[1])])
+    }
+}
+
 impl Frame {
-    pub fn to_mono(self) -> f32 {
+    // split into left and right.
+    pub fn split_array<const N: usize>(value: [Frame; N]) -> ([f32; N], [f32; N]) {
+        (array::from_fn(|i| value[i].0[0]), array::from_fn(|i| value[i].0[1]))
+    }
+
+    pub fn sum_to_mono(self) -> f32 {
         self.0[0] + self.0[1]
     }
+
+    /// supposed to be used when the Frame only holds mono data
+    // fn as_mono(self) -> f32 {
+    //     debug_assert_eq!(self.0[0], self.0[1]);
+    //     self.0[0]
+    // }
 
     pub fn from_mut<'a>(value: &'a mut [f32; 2]) -> &'a mut Self {
         // SAFETY: lifetime is specified, both mut, Self is repr(transparent).

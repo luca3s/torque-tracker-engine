@@ -1,163 +1,100 @@
-use std::{borrow::Borrow, fmt::Debug, mem::ManuallyDrop, ops::Deref};
+use std::{array, fmt::Debug, mem::ManuallyDrop, ops::Deref, sync::Arc};
 
-use basedrop::Shared;
+use cpal::FromSample;
 
-use crate::{file::impulse_format::sample::VibratoWave, project::note_event::Note};
+use crate::{audio_processing::Frame, file::impulse_format::sample::VibratoWave, manager::Collector, project::note_event::Note};
 
-// This ugliness won't be needed anymore as soon as Return Type Notatiion in type positions is available
-// https://blog.rust-lang.org/inside-rust/2024/09/26/rtn-call-for-testing.html
-// I could also keep it as it simplifies API everywhere else a lot and makes sure only my defined Types can "impl the trait"
-pub(crate) union SampleRef<'a, const GC: bool> {
-    gc: ManuallyDrop<Shared<SampleData>>,
-    reference: &'a SampleData,
+pub(crate) union SampleHandle<'a, const GC: bool> {
+    gc: ManuallyDrop<SharedSample>,
+    reference: ManuallyDrop<SampleRef<'a>>
 }
 
-impl SampleRef<'static, true> {
-    pub(crate) fn new(data: Shared<SampleData>) -> Self {
-        SampleRef {
-            gc: ManuallyDrop::new(data),
-        }
-    }
-
-    pub fn get(&self) -> &Shared<SampleData> {
-        unsafe { &self.gc }
-    }
-}
-
-impl<'a> SampleRef<'a, false> {
-    pub fn new(data: &'a SampleData) -> Self {
-        SampleRef { reference: data }
-    }
-
-    pub fn get(&self) -> &SampleData {
-        unsafe { self.reference }
-    }
-}
-
-impl<const GC: bool> Debug for SampleRef<'_, GC> {
+impl<const GC: bool> Debug for SampleHandle<'_, GC> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match GC {
-            true => write!(f, "GC Sample Ref"),
-            false => write!(f, "Non GC Sample Ref"),
+            true => f.debug_struct("GC Sample Handle").field("data", unsafe { &self.gc }).finish(),
+            false => f.debug_struct("Ref Sample").field("data", unsafe { &self.reference }).finish(),
         }
     }
 }
 
-impl<const GC: bool> Deref for SampleRef<'_, GC> {
-    type Target = SampleData;
-
-    fn deref(&self) -> &Self::Target {
-        match GC {
-            true => unsafe { self.gc.deref() },
-            false => unsafe { self.reference },
-        }
-    }
-}
-
-impl<const GC: bool> Drop for SampleRef<'_, GC> {
-    fn drop(&mut self) {
-        if GC {
-            unsafe { ManuallyDrop::drop(&mut self.gc) };
-        }
-    }
-}
-
-impl<const GC: bool> Clone for SampleRef<'_, GC> {
+impl<const GC: bool> Clone for SampleHandle<'_, GC> {
     fn clone(&self) -> Self {
         match GC {
-            true => {
-                let data = unsafe { self.gc.deref().clone() };
-                SampleRef {
-                    gc: ManuallyDrop::new(data),
-                }
-            }
-            false => {
-                let data = unsafe { self.reference };
-                SampleRef { reference: data }
-            }
+            true => Self { gc: unsafe { self.gc.clone() } },
+            false => Self { reference: unsafe { self.reference } },
+        }
+    }
+}
+
+impl<const GC: bool> SampleHandle<'_, GC> {
+    pub fn get_ref(&self) -> SampleRef<'_> {
+        match GC {
+            true => unsafe { self.gc.deref().borrow() },
+            false => unsafe { *self.reference.deref() },
+        }
+    }
+}
+
+impl<const GC: bool> Drop for SampleHandle<'_, GC> {
+    fn drop(&mut self) {
+        // references don't need to be dropped
+        if GC {
+            unsafe { ManuallyDrop::drop(&mut self.gc) }
         }
     }
 }
 
 pub union Sample<const GC: bool> {
-    gc: ManuallyDrop<Shared<SampleData>>,
-    owned: ManuallyDrop<SampleData>,
+    gc: ManuallyDrop<SharedSample>,
+    owned: ManuallyDrop<OwnedSample>,
 }
 
 impl Sample<true> {
-    pub fn new(data: Shared<SampleData>) -> Self {
-        Self {
-            gc: ManuallyDrop::new(data),
-        }
+    pub(crate) fn new(value: SharedSample) -> Self {
+        Self { gc: ManuallyDrop::new(value) }
     }
 
-    pub(crate) fn get_ref(&self) -> SampleRef<'static, true> {
-        let data = unsafe { self.gc.deref().clone() };
-        SampleRef::<'static, true>::new(data)
+    pub(crate) fn get_handle(&self) -> SampleHandle<'static, true> {
+        let data = unsafe { self.gc.clone() };
+        SampleHandle { gc: data }
     }
 
-    pub fn get(&self) -> &Shared<SampleData> {
-        unsafe { &self.gc }
-    }
-
-    pub fn take(mut self) -> Shared<SampleData> {
+    pub(crate) fn take(mut self) -> SharedSample {
         let out = unsafe { ManuallyDrop::take(&mut self.gc) };
         std::mem::forget(self);
         out
     }
 
-    pub fn to_owned(&self) -> Sample<false> {
-        let shared = unsafe { self.gc.deref() }.deref();
-        Sample::<false>::new(shared.clone())
+    pub(crate) fn from_owned(mut owned: Sample<false>, handle: &mut Collector) -> Self {
+        let data = unsafe { ManuallyDrop::take(&mut owned.owned) };
+        std::mem::forget(owned);
+        Sample { gc: ManuallyDrop::new(handle.add_sample(data)) }
     }
 }
 
 impl Sample<false> {
-    pub fn new(data: SampleData) -> Self {
-        Self {
-            owned: ManuallyDrop::new(data),
-        }
+    pub fn new(value: OwnedSample) -> Self {
+        Self { owned: ManuallyDrop::new(value) }
     }
 
-    pub fn get(&self) -> &SampleData {
-        unsafe { &self.owned }
+    pub(crate) fn get_handle(&self) -> SampleHandle<'_, false> {
+        let data = unsafe { self.owned.deref().borrow() };
+        SampleHandle { reference: ManuallyDrop::new(data) }
     }
 
-    pub(crate) fn get_ref<'a>(&'a self) -> SampleRef<'a, false> {
-        SampleRef::<'a, false>::new(unsafe { &self.owned })
-    }
-
-    pub fn take(mut self) -> SampleData {
+    pub fn take(mut self) -> OwnedSample {
         let out = unsafe { ManuallyDrop::take(&mut self.owned) };
         std::mem::forget(self);
         out
     }
-
-    // avoids copying the underlaying data. As soon as SampleData gets ?Sized this should change
-    #[expect(clippy::wrong_self_convention)]
-    pub(crate) fn to_gc(self, handle: &basedrop::Handle) -> Sample<true> {
-        let data = self.take();
-        let shared = basedrop::Shared::new(handle, data);
-        Sample::<true>::new(shared)
-    }
 }
 
-impl<const GC: bool> Debug for Sample<GC> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<const GC: bool> Sample<GC> {
+    pub(crate) fn get_ref(&self) -> SampleRef<'_> {
         match GC {
-            true => write!(f, "GC Sample. len: {}", self.borrow().len_with_pad()),
-            false => write!(f, "Owned Sample. len: {}", self.borrow().len_with_pad()),
-        }
-    }
-}
-
-impl<const GC: bool> Deref for Sample<GC> {
-    type Target = SampleData;
-
-    fn deref(&self) -> &Self::Target {
-        match GC {
-            true => unsafe { self.gc.deref() },
-            false => unsafe { self.owned.deref() },
+            true => unsafe { self.gc.deref().borrow() },
+            false => unsafe { self.owned.deref().borrow() },
         }
     }
 }
@@ -165,18 +102,17 @@ impl<const GC: bool> Deref for Sample<GC> {
 impl<const GC: bool> Clone for Sample<GC> {
     fn clone(&self) -> Self {
         match GC {
-            true => {
-                let data = unsafe { self.gc.deref().clone() };
-                Sample {
-                    gc: ManuallyDrop::new(data),
-                }
-            }
-            false => {
-                let data = unsafe { self.owned.deref().clone() };
-                Sample {
-                    owned: ManuallyDrop::new(data),
-                }
-            }
+            true => Self { gc: unsafe { self.gc.clone() } },
+            false => Self { owned: unsafe { self.owned.clone() } },
+        }
+    }
+}
+
+impl<const GC: bool> Debug for Sample<GC> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match GC {
+            true => f.debug_struct("Shared Sample").field("data", unsafe { &self.gc }).finish(),
+            false => f.debug_struct("Boxed Sample").field("data", unsafe { &self.owned }).finish(),
         }
     }
 }
@@ -190,64 +126,151 @@ impl<const GC: bool> Drop for Sample<GC> {
     }
 }
 
-/// samples need to be padded with PAD_SIZE frames at the start and end
-#[derive(Clone, Debug)]
-pub enum SampleData {
-    Mono(Box<[f32]>),
-    Stereo(Box<[[f32; 2]]>),
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum SampleRef<'a> {
+    MonoF32(&'a [f32]),
+    MonoI16(&'a [i16]),
+    MonoI8(&'a [i8]),
+    StereoF32(&'a [[f32; 2]]),
+    StereoI16(&'a [[i16; 2]]),
+    StereoI8(&'a [[i8; 2]]),
 }
 
-impl SampleData {
-    pub const MAX_LENGTH: usize = 16000000;
-    pub const MAX_RATE: usize = 192000;
-    /// this many frames need to be put on the start and the end
-    pub const PAD_SIZE_EACH: usize = 4;
+impl SampleRef<'_> {
+    pub fn index(&self, index: usize) -> Frame {
+        match self {
+            SampleRef::MonoF32(d) => d[index].into(),
+            SampleRef::MonoI16(d) => d[index].into(),
+            SampleRef::MonoI8(d) => d[index].into(),
+            SampleRef::StereoF32(d) => d[index].into(),
+            SampleRef::StereoI16(d) => d[index].into(),
+            SampleRef::StereoI8(d) => d[index].into(),
+        }
+    }
+
+    pub fn index_stereo(&self, index: usize) -> Frame {
+        match self {
+            SampleRef::StereoF32(d) => d[index].into(),
+            SampleRef::StereoI16(d) => d[index].into(),
+            SampleRef::StereoI8(d) => d[index].into(),
+            _ => unreachable!()
+        }
+    }
+
+    /// index..index + N
+    pub fn index_stereo_array<const N: usize>(&self, index: usize) -> [Frame; N] {
+        match self { 
+            SampleRef::StereoF32(d) => array::from_fn(|i| d[index + i].into()),
+            SampleRef::StereoI16(d) => array::from_fn(|i| d[index + i].into()),
+            SampleRef::StereoI8(d) => array::from_fn(|i| d[index + i].into()),
+            _ => unreachable!()
+        }
+    }
+
+    pub fn index_mono_array<const N: usize>(&self, index: usize) -> [f32; N] {
+        match self {
+            SampleRef::MonoF32(d) => array::from_fn(|i| d[index + i]),
+            SampleRef::MonoI16(d) => array::from_fn(|i| f32::from_sample_(d[index + i])),
+            SampleRef::MonoI8(d) => array::from_fn(|i| f32::from_sample_(d[index + i])),
+            _ => unreachable!()
+        }
+    }
+
+    // index..index+N
+    /// calls process once or twice depending on stereo or mono
+    pub fn compute<const N: usize, F: Fn([f32; N]) -> f32>(&self, process: F, index: usize) -> Frame {
+        if self.is_mono() {
+            let arr = self.index_mono_array(index);
+            Frame::from(process(arr))
+        } else {
+            let arr = self.index_stereo_array(index);
+            let (left, right) = Frame::split_array(arr);
+            Frame::from([process(left), process(right)])
+        }
+    }
+
+    pub fn index_mono(&self, index: usize) -> f32 {
+        match self {
+            SampleRef::MonoF32(d) => d[index],
+            SampleRef::MonoI16(d) => d[index].into(),
+            SampleRef::MonoI8(d) => d[index].into(),
+            _ => unreachable!()
+        }
+    }
 
     pub fn len_with_pad(&self) -> usize {
         match self {
-            SampleData::Mono(m) => m.len(),
-            SampleData::Stereo(s) => s.len(),
+            SampleRef::MonoF32(d) => d.len(),
+            SampleRef::MonoI16(d) => d.len(),
+            SampleRef::MonoI8(d) => d.len(),
+            SampleRef::StereoF32(d) => d.len(),
+            SampleRef::StereoI16(d) => d.len(),
+            SampleRef::StereoI8(d) => d.len(),
+        }
+    }
+
+    pub fn is_mono(&self) -> bool {
+        match self {
+            SampleRef::MonoF32(_) => true,
+            SampleRef::MonoI16(_) => true,
+            SampleRef::MonoI8(_) => true,
+            SampleRef::StereoF32(_) => false,
+            SampleRef::StereoI16(_) => false,
+            SampleRef::StereoI8(_) => false,
         }
     }
 }
 
-// mono impl
-impl FromIterator<f32> for SampleData {
-    fn from_iter<T: IntoIterator<Item = f32>>(iter: T) -> Self {
-        let iter = iter.into_iter();
-        let size_hint = iter.size_hint();
-        let mut data = if let Some(upper_bound) = size_hint.1 {
-            Vec::with_capacity(upper_bound + (Self::PAD_SIZE_EACH * 2))
-        } else {
-            Vec::with_capacity(size_hint.0 + (Self::PAD_SIZE_EACH * 2))
-        };
+#[derive(Debug, Clone)]
+pub enum OwnedSample {
+    MonoF32(Box<[f32]>),
+    MonoI16(Box<[i16]>),
+    MonoI8(Box<[i8]>),
+    StereoF32(Box<[[f32; 2]]>),
+    StereoI16(Box<[[i16; 2]]>),
+    StereoI8(Box<[[i8; 2]]>),
+}
 
-        data.extend_from_slice(&[0.; Self::PAD_SIZE_EACH]);
-        data.extend(iter);
-        data.extend_from_slice(&[0.; Self::PAD_SIZE_EACH]);
-
-        Self::Mono(data.into_boxed_slice())
+impl OwnedSample {
+    pub(crate) fn borrow(&self) -> SampleRef<'_> {
+        match self {
+            OwnedSample::MonoF32(d) => SampleRef::MonoF32(d),
+            OwnedSample::MonoI16(d) => SampleRef::MonoI16(d),
+            OwnedSample::MonoI8(d) => SampleRef::MonoI8(d),
+            OwnedSample::StereoF32(d) => SampleRef::StereoF32(d),
+            OwnedSample::StereoI16(d) => SampleRef::StereoI16(d),
+            OwnedSample::StereoI8(d) => SampleRef::StereoI8(d),
+        }
     }
 }
 
-// stereo impl
-impl FromIterator<[f32; 2]> for SampleData {
-    fn from_iter<T: IntoIterator<Item = [f32; 2]>>(iter: T) -> Self {
-        let iter = iter.into_iter();
-        let size_hint = iter.size_hint();
-        let mut data = if let Some(upper_bound) = size_hint.1 {
-            Vec::with_capacity(upper_bound + (Self::PAD_SIZE_EACH * 2))
-        } else {
-            Vec::with_capacity(size_hint.0 + (Self::PAD_SIZE_EACH * 2))
-        };
+#[derive(Clone, Debug)]
+pub(crate) enum SharedSample {
+    MonoF32(Arc<[f32]>),
+    MonoI16(Arc<[i16]>),
+    MonoI8(Arc<[i8]>),
+    StereoF32(Arc<[[f32; 2]]>),
+    StereoI16(Arc<[[i16; 2]]>),
+    StereoI8(Arc<[[i8; 2]]>),
+}
 
-        data.extend_from_slice(&[[0.; 2]; Self::PAD_SIZE_EACH]);
-        data.extend(iter);
-        data.extend_from_slice(&[[0.; 2]; Self::PAD_SIZE_EACH]);
-
-        Self::Stereo(data.into_boxed_slice())
+impl SharedSample {
+    pub fn borrow(&self) -> SampleRef<'_> {
+        match self {
+            SharedSample::MonoF32(d) => SampleRef::MonoF32(d),
+            SharedSample::MonoI16(d) => SampleRef::MonoI16(d),
+            SharedSample::MonoI8(d) => SampleRef::MonoI8(d),
+            SharedSample::StereoF32(d) => SampleRef::StereoF32(d),
+            SharedSample::StereoI16(d) => SampleRef::StereoI16(d),
+            SharedSample::StereoI8(d) => SampleRef::StereoI8(d),
+        }
     }
 }
+
+pub const MAX_LENGTH: usize = 16000000;
+pub const MAX_RATE: usize = 192000;
+/// this many frames need to be put on the start and the end
+pub const PAD_SIZE_EACH: usize = 4;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SampleMetaData {

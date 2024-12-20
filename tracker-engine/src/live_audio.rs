@@ -9,7 +9,7 @@ use crate::project::song::Song;
 use cpal::{Sample, SampleFormat};
 use simple_left_right::Reader;
 
-pub type LiveAudioStatus = (Option<PlaybackStatus>, cpal::OutputStreamTimestamp);
+pub type LiveAudioStatus = (Option<PlaybackStatus>, Option<cpal::OutputStreamTimestamp>);
 
 pub(crate) struct LiveAudio {
     song: Reader<Song<true>>,
@@ -17,7 +17,7 @@ pub(crate) struct LiveAudio {
     live_note: Option<SamplePlayer<'static, true>>,
     manager: rtrb::Consumer<ToWorkerMsg>,
     // gets created in the first callback. could maybe do with an MaybeUninit
-    state_sender: triple_buffer::Input<Option<LiveAudioStatus>>,
+    state_sender: triple_buffer::Input<LiveAudioStatus>,
     config: OutputConfig,
 
     buffer: Box<[Frame]>,
@@ -30,7 +30,7 @@ impl LiveAudio {
     pub fn new(
         song: Reader<Song<true>>,
         manager: rtrb::Consumer<ToWorkerMsg>,
-        state_sender: triple_buffer::Input<Option<LiveAudioStatus>>,
+        state_sender: triple_buffer::Input<LiveAudioStatus>,
         config: OutputConfig,
     ) -> Self {
         Self {
@@ -44,11 +44,11 @@ impl LiveAudio {
         }
     }
 
-    fn send_state(&mut self, info: &cpal::OutputCallbackInfo) {
-        self.state_sender.write(Some((
+    fn send_state(&mut self, info: Option<&cpal::OutputCallbackInfo>) {
+        self.state_sender.write((
             self.playback_state.as_ref().map(|s| s.get_status()),
-            info.timestamp(),
-        )));
+            info.map(|info| info.timestamp()),
+        ));
     }
 
     #[inline]
@@ -67,7 +67,7 @@ impl LiveAudio {
                 ToWorkerMsg::PlayEvent(note) => {
                     if let Some(sample) = &song.samples[usize::from(note.sample_instr)] {
                         let sample_player = SamplePlayer::new(
-                            (sample.0, sample.1.get_ref()),
+                            (sample.0, sample.1.get_handle()),
                             self.config.sample_rate / 2,
                             note.note,
                         );
@@ -95,7 +95,7 @@ impl LiveAudio {
                 .zip(note_iter)
                 .for_each(|(buf, note)| buf.add_assign(note));
 
-            if live_note.is_done() {
+            if live_note.check_position().is_break() {
                 self.live_note = None;
             }
         }
@@ -127,7 +127,7 @@ impl LiveAudio {
         if self.config.channel_count.get() == 1 {
             data.iter_mut()
                 .zip(self.buffer.iter())
-                .for_each(|(out, buf)| *out = buf.to_mono().to_sample());
+                .for_each(|(out, buf)| *out = buf.sum_to_mono().to_sample());
         } else {
             data.chunks_exact_mut(usize::from(self.config.channel_count.get()))
                 .map(|frame| frame.split_first_chunk_mut::<2>().unwrap().0)
@@ -170,7 +170,7 @@ impl LiveAudio {
                 _ => panic!("Sample Format not supported."),
             }
 
-            self.send_state(info);
+            self.send_state(Some(info));
         }
     }
 
@@ -189,7 +189,7 @@ impl LiveAudio {
             if self.fill_internal_buffer() {
                 self.fill_from_internal(data);
             }
-            self.send_state(info);
+            self.send_state(Some(info));
         }
     }
 }

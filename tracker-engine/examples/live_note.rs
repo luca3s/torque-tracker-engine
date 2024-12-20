@@ -1,6 +1,6 @@
 use std::{num::NonZeroU16, time::Duration};
 
-use cpal::{traits::{DeviceTrait, HostTrait}, Sample};
+use cpal::traits::{DeviceTrait, HostTrait};
 use impulse_engine::{
     manager::{AudioManager, OutputConfig, ToWorkerMsg},
     project::{
@@ -8,7 +8,7 @@ use impulse_engine::{
         note_event::{Note, NoteEvent, VolumeEffect},
         song::{Song, SongOperation},
     },
-    sample::{SampleData, SampleMetaData},
+    sample::{OwnedSample, SampleMetaData},
 };
 
 fn main() {
@@ -18,10 +18,11 @@ fn main() {
     let spec = reader.spec();
     println!("sample specs: {spec:?}");
     assert!(spec.channels == 1);
-    let sample: SampleData = reader
+    let sample_data: Box<[i16]> = reader
         .samples::<i16>()
-        .map(|result| f32::from_sample(result.unwrap()))
+        .map(|result| result.unwrap())
         .collect();
+    let sample = OwnedSample::MonoI16(sample_data);
     let meta = SampleMetaData {
         sample_rate: spec.sample_rate,
         ..Default::default()
@@ -38,7 +39,7 @@ fn main() {
     println!("default config {:?}", default_config);
     println!("device: {:?}", default_device.name());
     let config = OutputConfig {
-        buffer_size: 15,
+        buffer_size: 32,
         channel_count: NonZeroU16::new(2).unwrap(),
         sample_rate: default_config.sample_rate().0,
     };
