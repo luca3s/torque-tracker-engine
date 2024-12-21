@@ -1,15 +1,15 @@
 use std::{fmt::Debug, num::NonZeroU16, sync::Arc, time::Duration};
 
-use cpal::traits::{DeviceTrait, StreamTrait};
 use simple_left_right::{WriteGuard, Writer};
 
 use crate::{
-    audio_processing::playback::PlaybackPosition,
-    live_audio::{LiveAudio, LiveAudioStatus},
+    audio_processing::playback::PlaybackStatus,
+    live_audio::LiveAudio,
     project::{
         note_event::NoteEvent,
         song::{Song, SongOperation, ValidOperation},
-    }, sample::{OwnedSample, SharedSample},
+    },
+    sample::{OwnedSample, SharedSample},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -25,7 +25,7 @@ pub enum ToWorkerMsg {
 pub enum SendResult {
     Success,
     BufferFull,
-    AudioInactive
+    AudioInactive,
 }
 
 impl SendResult {
@@ -43,16 +43,129 @@ impl SendResult {
     }
 }
 
-struct ActiveStream {
-    stream: cpal::Stream,
-    buffer_time: Duration,
-    send: rtrb::Producer<ToWorkerMsg>,
-    status: triple_buffer::Output<LiveAudioStatus>,
+pub trait OutputStream {
+    /// Information that is passed to the callback each time it is called
+    type BufferInformation: Send + Clone + 'static;
+    type PauseErr;
+    type PlayErr;
+    fn pause(&mut self) -> Result<(), Self::PauseErr> {
+        // what i want
+        // Result::<(), !>::Ok(())
+        Ok(())
+    }
+    fn play(&mut self) -> Result<(), Self::PlayErr> {
+        Ok(())
+    }
 }
 
-impl Debug for ActiveStream {
+pub trait StreamBuilder {
+    /// Error when creating the stream
+    type CreateErr;
+    /// Error while the stream is running
+    type StreamErr: Debug;
+    type Stream: OutputStream;
+    fn create(
+        self,
+        data_callback: impl FnMut(&mut [f32], <Self::Stream as OutputStream>::BufferInformation)
+            + Send
+            + 'static,
+        err_callback: impl FnMut(Self::StreamErr) + Send + 'static,
+        config: OutputConfig,
+    ) -> Result<Self::Stream, Self::CreateErr>;
+}
+
+#[cfg(feature = "cpal")]
+mod cpal {
+    use std::num::NonZeroU16;
+
+    use super::{OutputConfig, OutputStream, StreamBuilder};
+
+
+    impl<Stream: cpal::traits::StreamTrait> OutputStream for Stream {
+        type BufferInformation = cpal::OutputStreamTimestamp;
+    
+        type PauseErr = cpal::PauseStreamError;
+    
+        type PlayErr = cpal::PlayStreamError;
+    
+        fn pause(&mut self) -> Result<(), Self::PauseErr> {
+            <Self as cpal::traits::StreamTrait>::pause(self)
+        }
+    
+        fn play(&mut self) -> Result<(), Self::PlayErr> {
+            <Self as cpal::traits::StreamTrait>::play(self)
+        }
+    }
+
+    impl<Device: cpal::traits::DeviceTrait> StreamBuilder for &Device {
+        type CreateErr = cpal::BuildStreamError;
+        type StreamErr = cpal::StreamError;
+        type Stream = Device::Stream;
+        fn create(
+            self,
+            mut data_callback: impl FnMut(&mut [f32], <<Self as StreamBuilder>::Stream as OutputStream>::BufferInformation)
+                + Send
+                + 'static,
+            err_callback: impl FnMut(Self::StreamErr) + Send + 'static,
+            config: OutputConfig,
+        ) -> Result<Self::Stream, Self::CreateErr> {
+            self.build_output_stream_raw(
+                &config.into(),
+                cpal::SampleFormat::F32,
+                move |d, i| {
+                    let d = d.as_slice_mut().unwrap();
+                    data_callback(d, i.timestamp())
+                },
+                err_callback,
+                None,
+            )
+        }
+    }
+
+    impl From<OutputConfig> for cpal::StreamConfig {
+        fn from(value: OutputConfig) -> Self {
+            cpal::StreamConfig {
+                channels: value.channel_count.into(),
+                sample_rate: cpal::SampleRate(value.sample_rate),
+                buffer_size: cpal::BufferSize::Fixed(value.buffer_size),
+            }
+        }
+    }
+
+    impl TryFrom<cpal::StreamConfig> for OutputConfig {
+        type Error = ();
+    
+        /// fails if BufferSize isn't explicit or zero output channels are specified.
+        fn try_from(value: cpal::StreamConfig) -> Result<Self, Self::Error> {
+            match value.buffer_size {
+                cpal::BufferSize::Default => Err(()),
+                cpal::BufferSize::Fixed(size) => Ok(OutputConfig {
+                    buffer_size: size,
+                    channel_count: NonZeroU16::try_from(value.channels).map_err(|_| ())?,
+                    sample_rate: value.sample_rate.0,
+                }),
+            }
+        }
+    }
+}
+
+struct ActiveStream<S: OutputStream> {
+    stream: S,
+    buffer_time: Duration,
+    send: rtrb::Producer<ToWorkerMsg>,
+    status: triple_buffer::Output<(Option<PlaybackStatus>, Option<S::BufferInformation>)>,
+}
+
+impl<S: OutputStream> Debug for ActiveStream<S> 
+where 
+    S::BufferInformation: Debug
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ActiveStream").field("buffer_time", &self.buffer_time).field("send", &self.send).field("status", &self.status).finish()
+        f.debug_struct("ActiveStream")
+            .field("buffer_time", &self.buffer_time)
+            .field("send", &self.send)
+            .field("status", &self.status)
+            .finish()
     }
 }
 
@@ -98,13 +211,13 @@ impl Collector {
 
 /// You will need to write your own spin loops.
 /// For that you can and maybe should use AudioManager::buffer_time.
-pub struct AudioManager {
+pub struct AudioManager<S: OutputStream> {
     song: Writer<Song<true>, ValidOperation>,
     gc: Collector,
-    stream: Option<ActiveStream>,
+    stream: Option<ActiveStream<S>>,
 }
 
-impl AudioManager {
+impl<S: OutputStream> AudioManager<S> {
     pub fn new(song: Song<false>) -> Self {
         let mut gc = Collector::default();
         let left_right = simple_left_right::Writer::new(song.to_gc(&mut gc));
@@ -117,7 +230,10 @@ impl AudioManager {
     }
 
     pub fn try_edit_song(&mut self) -> Option<SongEdit<'_>> {
-        self.song.try_lock().map(|song| SongEdit { song, gc: &mut self.gc })
+        self.song.try_lock().map(|song| SongEdit {
+            song,
+            gc: &mut self.gc,
+        })
     }
 
     pub fn get_song(&self) -> &Song<true> {
@@ -126,52 +242,6 @@ impl AudioManager {
 
     pub fn collect_garbage(&mut self) {
         self.gc.collect();
-    }
-
-    /// If the config specifies more than two channels only the first two will be filled with audio.
-    /// The rest gets silence.
-    pub fn init_audio(
-        &mut self,
-        device: cpal::Device,
-        config: OutputConfig,
-    ) -> Result<(), cpal::BuildStreamError> {
-        const TO_WORKER_CAPACITY: usize = 5;
-
-        let from_worker = triple_buffer::triple_buffer(&(None, None));
-        let to_worker = rtrb::RingBuffer::new(TO_WORKER_CAPACITY);
-        let reader = self.song.build_reader().unwrap();
-
-        let audio_worker = LiveAudio::new(reader, to_worker.1, from_worker.0, config);
-
-        let stream = device.build_output_stream_raw(
-            &config.into(),
-            cpal::SampleFormat::F32,
-            audio_worker.get_generic_callback(),
-            |err| println!("{err}"),
-            None,
-        )?;
-        let buffer_time =
-            Duration::from_millis((config.buffer_size * 1000 / config.buffer_size).into());
-
-        stream.play().unwrap();
-
-        self.stream = Some(ActiveStream { stream, buffer_time, send: to_worker.0, status: from_worker.1 });
-
-        Ok(())
-    }
-
-    /// pauses the audio. only works on some platforms (look at cpal docs)
-    pub fn pause_audio(&mut self) {
-        if let Some(stream) = &mut self.stream {
-            stream.stream.pause().unwrap();
-        }
-    }
-
-    /// resume the audio. playback is in the same state as before the pause. (only available on some platforms, see cpal docs for stream.pause())
-    pub fn resume_audio(&self) {
-        if let Some(stream) = &self.stream {
-            stream.stream.play().unwrap();
-        }
     }
 
     /// None if there is no active stream.
@@ -194,21 +264,75 @@ impl AudioManager {
     }
 
     /// last playback status sent by the audio worker
-    pub fn playback_status(&mut self) -> Option<&LiveAudioStatus> {
+    pub fn playback_status(&mut self) -> Option<&(Option<PlaybackStatus>, Option<S::BufferInformation>)> {
         self.stream.as_mut().map(|s| s.status.read())
     }
 
     /// Some if a stream is active.
     /// Returns the approximate time it takes to process an audio buffer based on the used settings.
-    /// 
+    ///
     /// Useful for implementing spin_loops on collect_garbage or for locking a SongEdit as every time a buffer is finished
     /// garbage could be releases and a lock could be made available
     pub fn buffer_time(&self) -> Option<Duration> {
         self.stream.as_ref().map(|s| s.buffer_time)
     }
+
+    /// pauses the audio. only works on some platforms (look at cpal docs)
+    pub fn pause_audio(&mut self) -> Option<Result<(), S::PauseErr>> {
+        self.stream.as_mut().map(|s| s.stream.pause())
+        // if let Some(stream) = &mut self.stream {
+        //     stream.stream.pause();
+        // }
+    }
+
+    /// resume the audio. playback is in the same state as before the pause. (only available on some platforms, see cpal docs for stream.pause())
+    pub fn resume_audio(&mut self) -> Option<Result<(), <S as OutputStream>::PlayErr>> {
+        self.stream.as_mut().map(|s| s.stream.play())
+    }
+
+    /// If the config specifies more than two channels only the first two will be filled with audio.
+    /// The rest gets silence.
+    pub fn init_audio<Builder>(
+        &mut self,
+        create_stream: Builder,
+        config: OutputConfig,
+    ) -> Result<(), Builder::CreateErr> 
+    where
+        Builder: StreamBuilder<Stream = S>
+    {
+        const TO_WORKER_CAPACITY: usize = 5;
+
+        let from_worker = triple_buffer::triple_buffer(&(None, None));
+        let to_worker = rtrb::RingBuffer::new(TO_WORKER_CAPACITY);
+        let reader = self.song.build_reader().unwrap();
+
+        let audio_worker = LiveAudio::<S::BufferInformation>::new(reader, to_worker.1, from_worker.0, config);
+
+        // let stream = device.build_output_stream_raw(
+        //     &config.into(),
+        //     cpal::SampleFormat::F32,
+        //     audio_worker.get_generic_callback(),
+        //     |err| println!("{err}"),
+        //     None,
+        // )?;
+        let stream = create_stream.create(audio_worker.get_typed_callback(), |err| eprintln!("{err:?}"), config)?;
+        let buffer_time =
+            Duration::from_millis((config.buffer_size * 1000 / config.buffer_size).into());
+
+        // stream.play();
+
+        self.stream = Some(ActiveStream {
+            stream,
+            buffer_time,
+            send: to_worker.0,
+            status: from_worker.1,
+        });
+
+        Ok(())
+    }
 }
 
-impl Drop for AudioManager {
+impl<S: OutputStream> Drop for AudioManager<S> {
     /// if this panics the drop implementation isn't right and the Audio Callback isn't cleaned up properly
     fn drop(&mut self) {
         self.deinit_audio();
@@ -263,32 +387,6 @@ pub struct OutputConfig {
     pub sample_rate: u32,
 }
 
-impl From<OutputConfig> for cpal::StreamConfig {
-    fn from(value: OutputConfig) -> Self {
-        cpal::StreamConfig {
-            channels: value.channel_count.into(),
-            sample_rate: cpal::SampleRate(value.sample_rate),
-            buffer_size: cpal::BufferSize::Fixed(value.buffer_size),
-        }
-    }
-}
-
-impl TryFrom<cpal::StreamConfig> for OutputConfig {
-    type Error = ();
-
-    /// fails if BufferSize isn't explicit or zero output channels are specified.
-    fn try_from(value: cpal::StreamConfig) -> Result<Self, Self::Error> {
-        match value.buffer_size {
-            cpal::BufferSize::Default => Err(()),
-            cpal::BufferSize::Fixed(size) => Ok(OutputConfig {
-                buffer_size: size,
-                channel_count: NonZeroU16::try_from(value.channels).map_err(|_| ())?,
-                sample_rate: value.sample_rate.0,
-            }),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 pub enum PlaybackSettings {
     Pattern { idx: usize, should_loop: bool },
@@ -302,11 +400,4 @@ impl Default for PlaybackSettings {
             should_loop: false,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum FromWorkerMsg {
-    BufferFinished(cpal::OutputStreamTimestamp),
-    CurrentPlaybackPosition(PlaybackPosition),
-    PlaybackStopped,
 }

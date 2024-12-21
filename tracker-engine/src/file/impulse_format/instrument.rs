@@ -1,5 +1,4 @@
 use std::array;
-use std::io::Read;
 
 use crate::file::err;
 use crate::file::err::LoadDefect;

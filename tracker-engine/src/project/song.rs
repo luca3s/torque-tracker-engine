@@ -1,12 +1,12 @@
 use std::array;
 use std::fmt::{Debug, Formatter};
 
+use super::pattern::{Pattern, PatternOperation};
 use crate::channel::Pan;
 use crate::file::impulse_format;
 use crate::file::impulse_format::header::PatternOrder;
 use crate::manager::Collector;
 use crate::sample::{OwnedSample, Sample, SampleMetaData, SharedSample};
-use super::pattern::{Pattern, PatternOperation};
 
 /// Playback Speed in Schism is determined by two values: Tempo and Speed.
 /// Speed specifies how many ticks are in one row. This reduces tempo, but increases resolution of some effects.

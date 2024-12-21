@@ -1,11 +1,10 @@
 use std::{array, ops::IndexMut};
 
-use cpal::Sample;
+use dasp::sample::{FromSample, ToSample};
 
 pub(crate) mod instrument;
 pub mod playback;
 pub(crate) mod sample;
-// pub mod resample;
 
 #[repr(transparent)]
 #[derive(Clone, Copy, Default, Debug, PartialEq)]
@@ -75,34 +74,37 @@ impl From<f32> for Frame {
 
 impl From<i16> for Frame {
     fn from(value: i16) -> Self {
-        let value = f32::from_sample(value);
+        let value = f32::from_sample_(value);
         Self([value, value])
     }
 }
 
 impl From<[i16; 2]> for Frame {
     fn from(value: [i16; 2]) -> Self {
-        Self([f32::from_sample(value[0]), f32::from_sample(value[1])])
+        Self([f32::from_sample_(value[0]), f32::from_sample_(value[1])])
     }
 }
 
 impl From<i8> for Frame {
     fn from(value: i8) -> Self {
-        let value = f32::from_sample(value);
+        let value = f32::from_sample_(value);
         Self([value, value])
     }
 }
 
 impl From<[i8; 2]> for Frame {
     fn from(value: [i8; 2]) -> Self {
-        Self([f32::from_sample(value[0]), f32::from_sample(value[1])])
+        Self([f32::from_sample_(value[0]), f32::from_sample_(value[1])])
     }
 }
 
 impl Frame {
     // split into left and right.
     pub fn split_array<const N: usize>(value: [Frame; N]) -> ([f32; N], [f32; N]) {
-        (array::from_fn(|i| value[i].0[0]), array::from_fn(|i| value[i].0[1]))
+        (
+            array::from_fn(|i| value[i].0[0]),
+            array::from_fn(|i| value[i].0[1]),
+        )
     }
 
     pub fn sum_to_mono(self) -> f32 {
@@ -125,8 +127,8 @@ impl Frame {
         unsafe { std::mem::transmute::<&'a [f32; 2], &'a Self>(value) }
     }
 
-    pub fn to_sample<S: cpal::FromSample<f32>>(self) -> [S; 2] {
-        [self.0[0].to_sample(), self.0[1].to_sample()]
+    pub fn to_sample<S: dasp::sample::FromSample<f32>>(self) -> [S; 2] {
+        [self.0[0].to_sample_(), self.0[1].to_sample_()]
     }
 
     pub fn to_raw<'a>(into: &mut [Self]) -> &'a mut [[f32; 2]] {

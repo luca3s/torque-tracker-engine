@@ -29,7 +29,8 @@ fn main() {
     };
 
     manager
-        .try_edit_song().unwrap()
+        .try_edit_song()
+        .unwrap()
         .apply_operation(SongOperation::SetSample(1, meta, sample))
         .unwrap();
 
@@ -44,7 +45,7 @@ fn main() {
         sample_rate: default_config.sample_rate().0,
     };
 
-    manager.init_audio(default_device, config).unwrap();
+    manager.init_audio(&default_device, config).unwrap();
 
     let note_event = NoteEvent {
         note: Note::new(90).unwrap(),
@@ -52,9 +53,13 @@ fn main() {
         vol: VolumeEffect::None,
         command: NoteCommand::None,
     };
-    manager.try_msg_worker(ToWorkerMsg::PlayEvent(note_event)).unwrap();
+    manager
+        .try_msg_worker(ToWorkerMsg::PlayEvent(note_event))
+        .unwrap();
     std::thread::sleep(Duration::from_secs(1));
-    manager.try_msg_worker(ToWorkerMsg::PlayEvent(note_event)).unwrap();
+    manager
+        .try_msg_worker(ToWorkerMsg::PlayEvent(note_event))
+        .unwrap();
     std::thread::sleep(Duration::from_secs(1));
     println!("{:?}", manager.playback_status());
 }

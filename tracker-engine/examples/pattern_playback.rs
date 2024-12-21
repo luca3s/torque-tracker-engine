@@ -69,9 +69,11 @@ fn main() {
         sample_rate: default_config.sample_rate().0,
     };
 
-    manager.init_audio(default_device, config).unwrap();
+    manager.init_audio(&default_device, config).unwrap();
 
-    manager.try_msg_worker(ToWorkerMsg::Playback(PlaybackSettings::default())).unwrap();
+    manager
+        .try_msg_worker(ToWorkerMsg::Playback(PlaybackSettings::default()))
+        .unwrap();
 
     std::thread::sleep(Duration::from_secs(5));
     manager.deinit_audio();

@@ -248,8 +248,11 @@ macro_rules! create_sample_players {
             &$sel.song.patterns[$sel.state.position.pattern][$sel.state.position.row]
         {
             if let Some((meta, sample)) = &$sel.song.samples[usize::from(event.sample_instr)] {
-                let player =
-                    SamplePlayer::new((*meta, sample.get_handle()), $sel.state.samplerate, event.note);
+                let player = SamplePlayer::new(
+                    (*meta, sample.get_handle()),
+                    $sel.state.samplerate,
+                    event.note,
+                );
                 $sel.state.voices[usize::from(positions.channel)] = Some(player);
             }
         }

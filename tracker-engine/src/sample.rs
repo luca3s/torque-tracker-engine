@@ -1,19 +1,28 @@
 use std::{array, fmt::Debug, mem::ManuallyDrop, ops::Deref, sync::Arc};
 
-use cpal::FromSample;
+use dasp::sample::FromSample;
 
-use crate::{audio_processing::Frame, file::impulse_format::sample::VibratoWave, manager::Collector, project::note_event::Note};
+use crate::{
+    audio_processing::Frame, file::impulse_format::sample::VibratoWave, manager::Collector,
+    project::note_event::Note,
+};
 
 pub(crate) union SampleHandle<'a, const GC: bool> {
     gc: ManuallyDrop<SharedSample>,
-    reference: ManuallyDrop<SampleRef<'a>>
+    reference: ManuallyDrop<SampleRef<'a>>,
 }
 
 impl<const GC: bool> Debug for SampleHandle<'_, GC> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match GC {
-            true => f.debug_struct("GC Sample Handle").field("data", unsafe { &self.gc }).finish(),
-            false => f.debug_struct("Ref Sample").field("data", unsafe { &self.reference }).finish(),
+            true => f
+                .debug_struct("GC Sample Handle")
+                .field("data", unsafe { &self.gc })
+                .finish(),
+            false => f
+                .debug_struct("Ref Sample")
+                .field("data", unsafe { &self.reference })
+                .finish(),
         }
     }
 }
@@ -21,8 +30,12 @@ impl<const GC: bool> Debug for SampleHandle<'_, GC> {
 impl<const GC: bool> Clone for SampleHandle<'_, GC> {
     fn clone(&self) -> Self {
         match GC {
-            true => Self { gc: unsafe { self.gc.clone() } },
-            false => Self { reference: unsafe { self.reference } },
+            true => Self {
+                gc: unsafe { self.gc.clone() },
+            },
+            false => Self {
+                reference: unsafe { self.reference },
+            },
         }
     }
 }
@@ -52,7 +65,9 @@ pub union Sample<const GC: bool> {
 
 impl Sample<true> {
     pub(crate) fn new(value: SharedSample) -> Self {
-        Self { gc: ManuallyDrop::new(value) }
+        Self {
+            gc: ManuallyDrop::new(value),
+        }
     }
 
     pub(crate) fn get_handle(&self) -> SampleHandle<'static, true> {
@@ -69,18 +84,24 @@ impl Sample<true> {
     pub(crate) fn from_owned(mut owned: Sample<false>, handle: &mut Collector) -> Self {
         let data = unsafe { ManuallyDrop::take(&mut owned.owned) };
         std::mem::forget(owned);
-        Sample { gc: ManuallyDrop::new(handle.add_sample(data)) }
+        Sample {
+            gc: ManuallyDrop::new(handle.add_sample(data)),
+        }
     }
 }
 
 impl Sample<false> {
     pub fn new(value: OwnedSample) -> Self {
-        Self { owned: ManuallyDrop::new(value) }
+        Self {
+            owned: ManuallyDrop::new(value),
+        }
     }
 
     pub(crate) fn get_handle(&self) -> SampleHandle<'_, false> {
         let data = unsafe { self.owned.deref().borrow() };
-        SampleHandle { reference: ManuallyDrop::new(data) }
+        SampleHandle {
+            reference: ManuallyDrop::new(data),
+        }
     }
 
     pub fn take(mut self) -> OwnedSample {
@@ -102,8 +123,12 @@ impl<const GC: bool> Sample<GC> {
 impl<const GC: bool> Clone for Sample<GC> {
     fn clone(&self) -> Self {
         match GC {
-            true => Self { gc: unsafe { self.gc.clone() } },
-            false => Self { owned: unsafe { self.owned.clone() } },
+            true => Self {
+                gc: unsafe { self.gc.clone() },
+            },
+            false => Self {
+                owned: unsafe { self.owned.clone() },
+            },
         }
     }
 }
@@ -111,8 +136,14 @@ impl<const GC: bool> Clone for Sample<GC> {
 impl<const GC: bool> Debug for Sample<GC> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match GC {
-            true => f.debug_struct("Shared Sample").field("data", unsafe { &self.gc }).finish(),
-            false => f.debug_struct("Boxed Sample").field("data", unsafe { &self.owned }).finish(),
+            true => f
+                .debug_struct("Shared Sample")
+                .field("data", unsafe { &self.gc })
+                .finish(),
+            false => f
+                .debug_struct("Boxed Sample")
+                .field("data", unsafe { &self.owned })
+                .finish(),
         }
     }
 }
@@ -153,17 +184,17 @@ impl SampleRef<'_> {
             SampleRef::StereoF32(d) => d[index].into(),
             SampleRef::StereoI16(d) => d[index].into(),
             SampleRef::StereoI8(d) => d[index].into(),
-            _ => unreachable!()
+            _ => unreachable!(),
         }
     }
 
     /// index..index + N
     pub fn index_stereo_array<const N: usize>(&self, index: usize) -> [Frame; N] {
-        match self { 
+        match self {
             SampleRef::StereoF32(d) => array::from_fn(|i| d[index + i].into()),
             SampleRef::StereoI16(d) => array::from_fn(|i| d[index + i].into()),
             SampleRef::StereoI8(d) => array::from_fn(|i| d[index + i].into()),
-            _ => unreachable!()
+            _ => unreachable!(),
         }
     }
 
@@ -172,13 +203,17 @@ impl SampleRef<'_> {
             SampleRef::MonoF32(d) => array::from_fn(|i| d[index + i]),
             SampleRef::MonoI16(d) => array::from_fn(|i| f32::from_sample_(d[index + i])),
             SampleRef::MonoI8(d) => array::from_fn(|i| f32::from_sample_(d[index + i])),
-            _ => unreachable!()
+            _ => unreachable!(),
         }
     }
 
     // index..index+N
     /// calls process once or twice depending on stereo or mono
-    pub fn compute<const N: usize, F: Fn([f32; N]) -> f32>(&self, process: F, index: usize) -> Frame {
+    pub fn compute<const N: usize, F: Fn([f32; N]) -> f32>(
+        &self,
+        process: F,
+        index: usize,
+    ) -> Frame {
         if self.is_mono() {
             let arr = self.index_mono_array(index);
             Frame::from(process(arr))
@@ -194,7 +229,7 @@ impl SampleRef<'_> {
             SampleRef::MonoF32(d) => d[index],
             SampleRef::MonoI16(d) => d[index].into(),
             SampleRef::MonoI8(d) => d[index].into(),
-            _ => unreachable!()
+            _ => unreachable!(),
         }
     }
 

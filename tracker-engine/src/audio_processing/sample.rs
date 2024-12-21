@@ -51,7 +51,6 @@ pub struct SamplePlayer<'sample, const GC: bool> {
     // f32 ranges 0..1
     position: (usize, f32),
     // is_done: bool,
-
     out_rate: u32,
     // how much the position is advanced for each output sample.
     // computed from in and out rate
@@ -155,7 +154,7 @@ impl<'sample, const GC: bool> SamplePlayer<'sample, GC> {
                 let diff = data[1] - data[0];
                 (diff * self.position.1) + data[0]
             },
-            self.position.0
+            self.position.0,
         )
     }
 
