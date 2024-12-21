@@ -16,9 +16,6 @@ default = ["cpal"]
 cpal = ["dep:cpal"]
 
 [dependencies]
-# added a couple features to it. pull requests don't really progress
-# basedrop = "0.1.2" # miri reports Race Condition. Wait for fix or pull inside
-# basedrop = { git = "https://github.com/luca3s/basedrop/", branch = "all-patches"}
 cpal = { version = "0.15.3", optional = true }
 dasp = { version = "0.11.0", default-features = false, features = ["std"] }
 rtrb = "0.3.1"
