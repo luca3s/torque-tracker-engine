@@ -80,18 +80,17 @@ mod cpal {
 
     use super::{OutputConfig, OutputStream, StreamBuilder};
 
-
     impl<Stream: cpal::traits::StreamTrait> OutputStream for Stream {
         type BufferInformation = cpal::OutputStreamTimestamp;
-    
+
         type PauseErr = cpal::PauseStreamError;
-    
+
         type PlayErr = cpal::PlayStreamError;
-    
+
         fn pause(&mut self) -> Result<(), Self::PauseErr> {
             <Self as cpal::traits::StreamTrait>::pause(self)
         }
-    
+
         fn play(&mut self) -> Result<(), Self::PlayErr> {
             <Self as cpal::traits::StreamTrait>::play(self)
         }
@@ -103,8 +102,10 @@ mod cpal {
         type Stream = Device::Stream;
         fn create(
             self,
-            mut data_callback: impl FnMut(&mut [f32], <<Self as StreamBuilder>::Stream as OutputStream>::BufferInformation)
-                + Send
+            mut data_callback: impl FnMut(
+                    &mut [f32],
+                    <<Self as StreamBuilder>::Stream as OutputStream>::BufferInformation,
+                ) + Send
                 + 'static,
             err_callback: impl FnMut(Self::StreamErr) + Send + 'static,
             config: OutputConfig,
@@ -134,7 +135,7 @@ mod cpal {
 
     impl TryFrom<cpal::StreamConfig> for OutputConfig {
         type Error = ();
-    
+
         /// fails if BufferSize isn't explicit or zero output channels are specified.
         fn try_from(value: cpal::StreamConfig) -> Result<Self, Self::Error> {
             match value.buffer_size {
@@ -156,9 +157,9 @@ struct ActiveStream<S: OutputStream> {
     status: triple_buffer::Output<(Option<PlaybackStatus>, Option<S::BufferInformation>)>,
 }
 
-impl<S: OutputStream> Debug for ActiveStream<S> 
-where 
-    S::BufferInformation: Debug
+impl<S: OutputStream> Debug for ActiveStream<S>
+where
+    S::BufferInformation: Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ActiveStream")
@@ -264,7 +265,9 @@ impl<S: OutputStream> AudioManager<S> {
     }
 
     /// last playback status sent by the audio worker
-    pub fn playback_status(&mut self) -> Option<&(Option<PlaybackStatus>, Option<S::BufferInformation>)> {
+    pub fn playback_status(
+        &mut self,
+    ) -> Option<&(Option<PlaybackStatus>, Option<S::BufferInformation>)> {
         self.stream.as_mut().map(|s| s.status.read())
     }
 
@@ -296,9 +299,9 @@ impl<S: OutputStream> AudioManager<S> {
         &mut self,
         create_stream: Builder,
         config: OutputConfig,
-    ) -> Result<(), Builder::CreateErr> 
+    ) -> Result<(), Builder::CreateErr>
     where
-        Builder: StreamBuilder<Stream = S>
+        Builder: StreamBuilder<Stream = S>,
     {
         const TO_WORKER_CAPACITY: usize = 5;
 
@@ -306,7 +309,8 @@ impl<S: OutputStream> AudioManager<S> {
         let to_worker = rtrb::RingBuffer::new(TO_WORKER_CAPACITY);
         let reader = self.song.build_reader().unwrap();
 
-        let audio_worker = LiveAudio::<S::BufferInformation>::new(reader, to_worker.1, from_worker.0, config);
+        let audio_worker =
+            LiveAudio::<S::BufferInformation>::new(reader, to_worker.1, from_worker.0, config);
 
         // let stream = device.build_output_stream_raw(
         //     &config.into(),
@@ -315,7 +319,11 @@ impl<S: OutputStream> AudioManager<S> {
         //     |err| println!("{err}"),
         //     None,
         // )?;
-        let stream = create_stream.create(audio_worker.get_typed_callback(), |err| eprintln!("{err:?}"), config)?;
+        let stream = create_stream.create(
+            audio_worker.get_typed_callback(),
+            |err| eprintln!("{err:?}"),
+            config,
+        )?;
         let buffer_time =
             Duration::from_millis((config.buffer_size * 1000 / config.buffer_size).into());
 

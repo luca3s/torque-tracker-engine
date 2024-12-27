@@ -22,11 +22,12 @@ impl InFilePtr {
 ///
 /// R should be buffered in some way and not do a syscall on every read.
 /// If you ever find yourself using multiple different reader and/or handlers please open an issue on Github, i will change this to take &dyn.
-pub fn parse_song<R: std::io::Read + std::io::Seek, H: FnMut(LoadDefect)>(
+pub fn parse_song<R: std::io::Read + std::io::Seek>(
     reader: &mut R,
-    defect_handler: &mut H,
 ) -> Result<Song<false>, LoadErr> {
-    let header = header::ImpulseHeader::parse(reader, defect_handler)?;
+    //ignore defects
+    let mut defect_handler = |_| ();
+    let header = header::ImpulseHeader::parse(reader, &mut defect_handler)?;
     let mut song = Song::default();
     song.copy_values_from_header(&header);
 
@@ -38,7 +39,7 @@ pub fn parse_song<R: std::io::Read + std::io::Seek, H: FnMut(LoadDefect)>(
         .flat_map(|(idx, ptr)| ptr.map(|ptr| (idx, ptr)))
     {
         ptr.move_to_self(reader)?;
-        let pattern = pattern::parse_pattern(reader, defect_handler)?;
+        let pattern = pattern::parse_pattern(reader, &mut defect_handler)?;
         song.patterns[idx] = pattern;
     }
 

@@ -45,10 +45,8 @@ impl<Info: Send> LiveAudio<Info> {
     }
 
     fn send_state(&mut self, info: Option<Info>) {
-        self.state_sender.write((
-            self.playback_state.as_ref().map(|s| s.get_status()),
-            info,
-        ));
+        self.state_sender
+            .write((self.playback_state.as_ref().map(|s| s.get_status()), info));
     }
 
     #[inline]
