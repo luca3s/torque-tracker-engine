@@ -101,7 +101,7 @@ pub struct ReadGuard<'a, T> {
     reader: PhantomData<&'a mut Reader<T>>,
 }
 
-impl<'a, T> Deref for ReadGuard<'a, T> {
+impl<T> Deref for ReadGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
