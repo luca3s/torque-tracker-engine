@@ -1,7 +1,7 @@
 use std::{num::NonZeroU16, time::Duration};
 
 use cpal::traits::{DeviceTrait, HostTrait};
-use impulse_engine::{
+use tracker_engine::{
     manager::{AudioManager, OutputConfig, PlaybackSettings, ToWorkerMsg},
     project::{
         event_command::NoteCommand,
@@ -51,7 +51,7 @@ fn main() {
     }
     song.apply_operation(SongOperation::SetOrder(
         0,
-        impulse_engine::file::impulse_format::header::PatternOrder::Number(0),
+        tracker_engine::file::impulse_format::header::PatternOrder::Number(0),
     ))
     .unwrap();
 
@@ -69,13 +69,14 @@ fn main() {
         sample_rate: default_config.sample_rate().0,
     };
 
-    manager.init_audio(&default_device, config).unwrap();
+    let stream = manager.init_audio(&default_device, config).unwrap();
 
     manager
         .try_msg_worker(ToWorkerMsg::Playback(PlaybackSettings::default()))
         .unwrap();
 
     std::thread::sleep(Duration::from_secs(5));
-    manager.deinit_audio();
-    println!("{:?}", manager.playback_status())
+    drop(stream);
+    println!("{:?}", manager.playback_status());
+    manager.audio_stream_closed();
 }

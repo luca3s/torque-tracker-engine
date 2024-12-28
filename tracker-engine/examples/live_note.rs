@@ -1,7 +1,7 @@
 use std::{num::NonZeroU16, time::Duration};
 
 use cpal::traits::{DeviceTrait, HostTrait};
-use impulse_engine::{
+use tracker_engine::{
     manager::{AudioManager, OutputConfig, ToWorkerMsg},
     project::{
         event_command::NoteCommand,
@@ -45,7 +45,7 @@ fn main() {
         sample_rate: default_config.sample_rate().0,
     };
 
-    manager.init_audio(&default_device, config).unwrap();
+    let stream = manager.init_audio(&default_device, config).unwrap();
 
     let note_event = NoteEvent {
         note: Note::new(90).unwrap(),
@@ -62,4 +62,6 @@ fn main() {
         .unwrap();
     std::thread::sleep(Duration::from_secs(1));
     println!("{:?}", manager.playback_status());
+    drop(stream);
+    manager.audio_stream_closed();
 }

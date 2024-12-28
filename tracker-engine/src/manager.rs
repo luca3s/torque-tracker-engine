@@ -43,30 +43,18 @@ impl SendResult {
     }
 }
 
-pub trait OutputStream {
-    /// Information that is passed to the callback each time it is called
-    type BufferInformation: Send + Clone + 'static;
-    type PauseErr;
-    type PlayErr;
-    fn pause(&mut self) -> Result<(), Self::PauseErr> {
-        // what i want
-        // Result::<(), !>::Ok(())
-        Ok(())
-    }
-    fn play(&mut self) -> Result<(), Self::PlayErr> {
-        Ok(())
-    }
-}
-
 pub trait StreamBuilder {
     /// Error when creating the stream
     type CreateErr;
     /// Error while the stream is running
     type StreamErr: Debug;
-    type Stream: OutputStream;
+    /// Stream that is created
+    type Stream;
+    /// Information given to each buffer callback. Will be made available to the outside code via the Manager
+    type BufferInformation: Send + Clone + 'static;
     fn create(
         self,
-        data_callback: impl FnMut(&mut [f32], <Self::Stream as OutputStream>::BufferInformation)
+        data_callback: impl FnMut(&mut [f32], Self::BufferInformation)
             + Send
             + 'static,
         err_callback: impl FnMut(Self::StreamErr) + Send + 'static,
@@ -78,33 +66,18 @@ pub trait StreamBuilder {
 mod cpal {
     use std::num::NonZeroU16;
 
-    use super::{OutputConfig, OutputStream, StreamBuilder};
-
-    impl<Stream: cpal::traits::StreamTrait> OutputStream for Stream {
-        type BufferInformation = cpal::OutputStreamTimestamp;
-
-        type PauseErr = cpal::PauseStreamError;
-
-        type PlayErr = cpal::PlayStreamError;
-
-        fn pause(&mut self) -> Result<(), Self::PauseErr> {
-            <Self as cpal::traits::StreamTrait>::pause(self)
-        }
-
-        fn play(&mut self) -> Result<(), Self::PlayErr> {
-            <Self as cpal::traits::StreamTrait>::play(self)
-        }
-    }
+    use super::{OutputConfig, StreamBuilder};
 
     impl<Device: cpal::traits::DeviceTrait> StreamBuilder for &Device {
         type CreateErr = cpal::BuildStreamError;
         type StreamErr = cpal::StreamError;
         type Stream = Device::Stream;
+        type BufferInformation = cpal::OutputStreamTimestamp;
         fn create(
             self,
             mut data_callback: impl FnMut(
                     &mut [f32],
-                    <<Self as StreamBuilder>::Stream as OutputStream>::BufferInformation,
+                    Self::BufferInformation,
                 ) + Send
                 + 'static,
             err_callback: impl FnMut(Self::StreamErr) + Send + 'static,
@@ -150,24 +123,12 @@ mod cpal {
     }
 }
 
-struct ActiveStream<S: OutputStream> {
-    stream: S,
+/// Communication to and from an active Stream
+#[derive(Debug)]
+struct ActiveStreamComms<BufferInfo: Send + Clone> {
     buffer_time: Duration,
     send: rtrb::Producer<ToWorkerMsg>,
-    status: triple_buffer::Output<(Option<PlaybackStatus>, Option<S::BufferInformation>)>,
-}
-
-impl<S: OutputStream> Debug for ActiveStream<S>
-where
-    S::BufferInformation: Debug,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ActiveStream")
-            .field("buffer_time", &self.buffer_time)
-            .field("send", &self.send)
-            .field("status", &self.status)
-            .finish()
-    }
+    status: triple_buffer::Output<(Option<PlaybackStatus>, Option<BufferInfo>)>,
 }
 
 #[derive(Debug, Default)]
@@ -212,13 +173,13 @@ impl Collector {
 
 /// You will need to write your own spin loops.
 /// For that you can and maybe should use AudioManager::buffer_time.
-pub struct AudioManager<S: OutputStream> {
+pub struct AudioManager<BufferInfo: Send + Clone + 'static> {
     song: Writer<Song<true>, ValidOperation>,
     gc: Collector,
-    stream: Option<ActiveStream<S>>,
+    stream: Option<ActiveStreamComms<BufferInfo>>,
 }
 
-impl<S: OutputStream> AudioManager<S> {
+impl<BufferInfo: Send + Clone + 'static> AudioManager<BufferInfo> {
     pub fn new(song: Song<false>) -> Self {
         let mut gc = Collector::default();
         let left_right = simple_left_right::Writer::new(song.to_gc(&mut gc));
@@ -258,16 +219,10 @@ impl<S: OutputStream> AudioManager<S> {
         }
     }
 
-    /// closes the audio backend.
-    pub fn deinit_audio(&mut self) {
-        self.stream = None;
-        self.gc.collect();
-    }
-
     /// last playback status sent by the audio worker
     pub fn playback_status(
         &mut self,
-    ) -> Option<&(Option<PlaybackStatus>, Option<S::BufferInformation>)> {
+    ) -> Option<&(Option<PlaybackStatus>, Option<BufferInfo>)> {
         self.stream.as_mut().map(|s| s.status.read())
     }
 
@@ -280,17 +235,10 @@ impl<S: OutputStream> AudioManager<S> {
         self.stream.as_ref().map(|s| s.buffer_time)
     }
 
-    /// pauses the audio. only works on some platforms (look at cpal docs)
-    pub fn pause_audio(&mut self) -> Option<Result<(), S::PauseErr>> {
-        self.stream.as_mut().map(|s| s.stream.pause())
-        // if let Some(stream) = &mut self.stream {
-        //     stream.stream.pause();
-        // }
-    }
-
-    /// resume the audio. playback is in the same state as before the pause. (only available on some platforms, see cpal docs for stream.pause())
-    pub fn resume_audio(&mut self) -> Option<Result<(), <S as OutputStream>::PlayErr>> {
-        self.stream.as_mut().map(|s| s.stream.play())
+    /// asserts that the Manager had a Streamhandle and the Stream is actually closed
+    pub fn audio_stream_closed(&mut self) {
+        let stream = self.stream.take().unwrap();
+        assert!(stream.send.is_abandoned());
     }
 
     /// If the config specifies more than two channels only the first two will be filled with audio.
@@ -299,18 +247,19 @@ impl<S: OutputStream> AudioManager<S> {
         &mut self,
         create_stream: Builder,
         config: OutputConfig,
-    ) -> Result<(), Builder::CreateErr>
+    ) -> Result<Builder::Stream, Builder::CreateErr>
     where
-        Builder: StreamBuilder<Stream = S>,
+        Builder: StreamBuilder<BufferInformation = BufferInfo>,
     {
         const TO_WORKER_CAPACITY: usize = 5;
 
+        assert!(self.stream.is_none());
         let from_worker = triple_buffer::triple_buffer(&(None, None));
         let to_worker = rtrb::RingBuffer::new(TO_WORKER_CAPACITY);
         let reader = self.song.build_reader().unwrap();
 
         let audio_worker =
-            LiveAudio::<S::BufferInformation>::new(reader, to_worker.1, from_worker.0, config);
+            LiveAudio::<BufferInfo>::new(reader, to_worker.1, from_worker.0, config);
 
         // let stream = device.build_output_stream_raw(
         //     &config.into(),
@@ -327,23 +276,32 @@ impl<S: OutputStream> AudioManager<S> {
         let buffer_time =
             Duration::from_millis((config.buffer_size * 1000 / config.buffer_size).into());
 
-        // stream.play();
-
-        self.stream = Some(ActiveStream {
-            stream,
+        self.stream = Some(ActiveStreamComms {
             buffer_time,
             send: to_worker.0,
             status: from_worker.1,
         });
 
-        Ok(())
+        Ok(stream)
     }
 }
 
-impl<S: OutputStream> Drop for AudioManager<S> {
+impl<BufferInfo: Send + Clone> Drop for AudioManager<BufferInfo> {
     /// if this panics the drop implementation isn't right and the Audio Callback isn't cleaned up properly
     fn drop(&mut self) {
-        self.deinit_audio();
+        // try to stop playback if a stream is active
+        if let Some(stream) = &mut self.stream {
+            eprintln!("AudioManager dropped while audio Stream still active.");
+            let msg1 = stream.send.push(ToWorkerMsg::StopLiveNote);
+            let msg2 = stream.send.push(ToWorkerMsg::StopPlayback);
+            if msg1.is_err() || msg2.is_err() {
+                // This happens when the message buffer is full
+                eprintln!("Audio playback couldn't be stopped completely");
+            } else {
+                eprintln!("Audio playback was stopped");
+            }
+        }
+        // try to clean up as much memory as possible
         let mut song = self.try_edit_song().unwrap();
         for i in 0..Song::<true>::MAX_SAMPLES {
             song.apply_operation(SongOperation::RemoveSample(i))
@@ -356,7 +314,7 @@ impl<S: OutputStream> Drop for AudioManager<S> {
         // provide a diagnostic when memory is leaked
         let count = self.gc.sample_count();
         if count != 0 {
-            eprintln!("Audio thread cleanup didn't run before dropping the AudioManager. {} samples were leaked", count)
+            eprintln!("Audio thread cleanup didn't run before dropping the AudioManager. {} samples were droppen on the audio thread", count)
         }
     }
 }
