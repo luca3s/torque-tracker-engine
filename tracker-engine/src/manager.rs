@@ -1,4 +1,4 @@
-use std::{fmt::Debug, num::NonZeroU16, sync::Arc, time::Duration};
+use std::{fmt::Debug, mem::ManuallyDrop, num::NonZeroU16, ops::Deref, sync::Arc, time::Duration};
 
 use simple_left_right::{WriteGuard, Writer};
 
@@ -43,6 +43,25 @@ impl SendResult {
     }
 }
 
+/// This shouldn't get dropped as that will leak the stream.
+/// Close it by passing it to AudioManager::close_stream
+// this struct prevents a user of the library from closing the Stream by dropping it
+pub struct StreamHandle<S>(ManuallyDrop<S>);
+
+impl<S> Deref for StreamHandle<S> {
+    type Target = S;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<S> Drop for StreamHandle<S> {
+    fn drop(&mut self) {
+        eprintln!("StreamHandle dropped. Stream should be closed by passing it to AudioManager::close_stream")
+    }
+}
+
 pub trait StreamBuilder {
     /// Error when creating the stream
     type CreateErr;
@@ -66,6 +85,8 @@ pub trait StreamBuilder {
 mod cpal {
     use std::num::NonZeroU16;
 
+    use cpal::traits::StreamTrait;
+
     use super::{OutputConfig, StreamBuilder};
 
     impl<Device: cpal::traits::DeviceTrait> StreamBuilder for &Device {
@@ -83,7 +104,7 @@ mod cpal {
             err_callback: impl FnMut(Self::StreamErr) + Send + 'static,
             config: OutputConfig,
         ) -> Result<Self::Stream, Self::CreateErr> {
-            self.build_output_stream_raw(
+            let stream = self.build_output_stream_raw(
                 &config.into(),
                 cpal::SampleFormat::F32,
                 move |d, i| {
@@ -92,7 +113,11 @@ mod cpal {
                 },
                 err_callback,
                 None,
-            )
+            );
+            stream.inspect(|s|{
+                // this error is unlikely to ever happen. We just interacted with the device when starting the stream so interacting with it now should work.
+                let _ = s.play().inspect_err(|e| eprintln!("error while starting the stream {}", e));
+            })
         }
     }
 
@@ -148,7 +173,6 @@ impl Collector {
         };
 
         self.samples.push(sample.clone());
-        // debug_assert!(Arc::strong_count(sample) == 2);
         sample
     }
 
@@ -176,7 +200,7 @@ impl Collector {
 pub struct AudioManager<BufferInfo: Send + Clone + 'static> {
     song: Writer<Song<true>, ValidOperation>,
     gc: Collector,
-    stream: Option<ActiveStreamComms<BufferInfo>>,
+    stream_comms: Option<ActiveStreamComms<BufferInfo>>,
 }
 
 impl<BufferInfo: Send + Clone + 'static> AudioManager<BufferInfo> {
@@ -187,7 +211,7 @@ impl<BufferInfo: Send + Clone + 'static> AudioManager<BufferInfo> {
         Self {
             song: left_right,
             gc,
-            stream: None,
+            stream_comms: None,
         }
     }
 
@@ -206,10 +230,8 @@ impl<BufferInfo: Send + Clone + 'static> AudioManager<BufferInfo> {
         self.gc.collect();
     }
 
-    /// None if there is no active stream.
-    /// Some(Err) if the buffer is full.
     pub fn try_msg_worker(&mut self, msg: ToWorkerMsg) -> SendResult {
-        if let Some(stream) = &mut self.stream {
+        if let Some(stream) = &mut self.stream_comms {
             match stream.send.push(msg) {
                 Ok(_) => SendResult::Success,
                 Err(_) => SendResult::BufferFull,
@@ -223,7 +245,7 @@ impl<BufferInfo: Send + Clone + 'static> AudioManager<BufferInfo> {
     pub fn playback_status(
         &mut self,
     ) -> Option<&(Option<PlaybackStatus>, Option<BufferInfo>)> {
-        self.stream.as_mut().map(|s| s.status.read())
+        self.stream_comms.as_mut().map(|s| s.status.read())
     }
 
     /// Some if a stream is active.
@@ -232,13 +254,7 @@ impl<BufferInfo: Send + Clone + 'static> AudioManager<BufferInfo> {
     /// Useful for implementing spin_loops on collect_garbage or for locking a SongEdit as every time a buffer is finished
     /// garbage could be releases and a lock could be made available
     pub fn buffer_time(&self) -> Option<Duration> {
-        self.stream.as_ref().map(|s| s.buffer_time)
-    }
-
-    /// asserts that the Manager had a Streamhandle and the Stream is actually closed
-    pub fn audio_stream_closed(&mut self) {
-        let stream = self.stream.take().unwrap();
-        assert!(stream.send.is_abandoned());
+        self.stream_comms.as_ref().map(|s| s.buffer_time)
     }
 
     /// If the config specifies more than two channels only the first two will be filled with audio.
@@ -247,13 +263,13 @@ impl<BufferInfo: Send + Clone + 'static> AudioManager<BufferInfo> {
         &mut self,
         create_stream: Builder,
         config: OutputConfig,
-    ) -> Result<Builder::Stream, Builder::CreateErr>
+    ) -> Result<StreamHandle<Builder::Stream>, Builder::CreateErr>
     where
         Builder: StreamBuilder<BufferInformation = BufferInfo>,
     {
         const TO_WORKER_CAPACITY: usize = 5;
 
-        assert!(self.stream.is_none());
+        assert!(self.stream_comms.is_none(), "Stream already active");
         let from_worker = triple_buffer::triple_buffer(&(None, None));
         let to_worker = rtrb::RingBuffer::new(TO_WORKER_CAPACITY);
         let reader = self.song.build_reader().unwrap();
@@ -276,21 +292,28 @@ impl<BufferInfo: Send + Clone + 'static> AudioManager<BufferInfo> {
         let buffer_time =
             Duration::from_millis((config.buffer_size * 1000 / config.buffer_size).into());
 
-        self.stream = Some(ActiveStreamComms {
+        self.stream_comms = Some(ActiveStreamComms {
             buffer_time,
             send: to_worker.0,
             status: from_worker.1,
         });
 
-        Ok(stream)
+        Ok(StreamHandle(ManuallyDrop::new(stream)))
+    }
+
+    pub fn close_stream<S>(&mut self, stream: StreamHandle<S>) {
+        self.stream_comms.take().expect("stream wasn't active");
+        let mut stream = ManuallyDrop::new(stream);
+        unsafe {
+            ManuallyDrop::drop(&mut stream.0);
+        }
     }
 }
 
 impl<BufferInfo: Send + Clone> Drop for AudioManager<BufferInfo> {
-    /// if this panics the drop implementation isn't right and the Audio Callback isn't cleaned up properly
     fn drop(&mut self) {
         // try to stop playback if a stream is active
-        if let Some(stream) = &mut self.stream {
+        if let Some(stream) = &mut self.stream_comms {
             eprintln!("AudioManager dropped while audio Stream still active.");
             let msg1 = stream.send.push(ToWorkerMsg::StopLiveNote);
             let msg2 = stream.send.push(ToWorkerMsg::StopPlayback);
@@ -311,10 +334,14 @@ impl<BufferInfo: Send + Clone> Drop for AudioManager<BufferInfo> {
         // lock it once more to ensure that the changes were propagated
         self.try_edit_song().unwrap();
         self.gc.collect();
-        // provide a diagnostic when memory is leaked
+        // provide a diagnostic when memory is dropped incorrectly
         let count = self.gc.sample_count();
+        // no stream is active => we should be able to clean up all the memory.
+        if count != 0 && self.stream_comms.is_none() {
+            panic!("Collector bug");
+        }
         if count != 0 {
-            eprintln!("Audio thread cleanup didn't run before dropping the AudioManager. {} samples were droppen on the audio thread", count)
+            eprintln!("Audio stream wasn't closed before dropping the AudioManager. {} samples were droppen on the audio thread", count)
         }
     }
 }

@@ -62,6 +62,5 @@ fn main() {
         .unwrap();
     std::thread::sleep(Duration::from_secs(1));
     println!("{:?}", manager.playback_status());
-    drop(stream);
-    manager.audio_stream_closed();
+    manager.close_stream(stream);
 }
