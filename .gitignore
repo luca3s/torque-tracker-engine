@@ -1,5 +1,4 @@
 /target
 /test-files
 .DS_Store
-/mutants.out
-/mutants.out.old
+.jj

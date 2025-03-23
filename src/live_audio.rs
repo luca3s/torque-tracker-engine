@@ -9,14 +9,11 @@ use crate::project::song::Song;
 use dasp::sample::ToSample;
 use simple_left_right::Reader;
 
-// pub type LiveAudioStatus = (Option<PlaybackStatus>, Option<cpal::OutputStreamTimestamp>);
-
 pub(crate) struct LiveAudio<Info: Send> {
     song: Reader<Song<true>>,
     playback_state: Option<PlaybackState<'static, true>>,
     live_note: Option<SamplePlayer<'static, true>>,
     manager: rtrb::Consumer<ToWorkerMsg>,
-    // gets created in the first callback. could maybe do with an MaybeUninit
     state_sender: triple_buffer::Input<(Option<PlaybackStatus>, Option<Info>)>,
     config: OutputConfig,
 
@@ -44,12 +41,14 @@ impl<Info: Send> LiveAudio<Info> {
         }
     }
 
+    #[cfg_attr(feature = "rtsan", rtsan_standalone::nonblocking)]
     fn send_state(&mut self, info: Option<Info>) {
         self.state_sender
             .write((self.playback_state.as_ref().map(|s| s.get_status()), info));
     }
 
-    #[inline]
+    // #[inline(never)]
+    #[cfg_attr(feature = "rtsan", rtsan_standalone::nonblocking)]
     /// returns true if work was done
     fn fill_internal_buffer(&mut self) -> bool {
         let song = self.song.lock();
@@ -75,7 +74,6 @@ impl<Info: Send> LiveAudio<Info> {
                 ToWorkerMsg::StopLiveNote => self.live_note = None,
             }
         }
-
         if self.live_note.is_none() && self.playback_state.is_none() {
             // no processing todo
             return false;
@@ -98,7 +96,7 @@ impl<Info: Send> LiveAudio<Info> {
             }
         }
 
-        // process song playback
+        // // process song playback
         if let Some(playback) = &mut self.playback_state {
             let playback_iter = playback.iter::<{ INTERPOLATION }>(&song);
             self.buffer
@@ -116,6 +114,7 @@ impl<Info: Send> LiveAudio<Info> {
 
     /// converts the internal buffer to any possible output format and channel count
     /// sums stereo to mono and fills channels 3 and up with silence
+    #[cfg_attr(feature = "rtsan", rtsan_standalone::nonblocking)]
     #[inline]
     fn fill_from_internal<Sample: dasp::sample::Sample + dasp::sample::FromSample<f32>>(
         &mut self,
@@ -134,61 +133,31 @@ impl<Info: Send> LiveAudio<Info> {
         }
     }
 
-    // pub fn get_generic_callback(
-    //     mut self,
-    // ) -> impl FnMut(&mut cpal::Data, &cpal::OutputCallbackInfo) {
-    //     move |data, info| {
-    //         assert_eq!(
-    //             data.len(),
-    //             usize::try_from(self.config.buffer_size).unwrap()
-    //                 * usize::from(self.config.channel_count.get())
-    //         );
-
-    //         // actual audio work, if false no work was done
-    //         if !self.fill_internal_buffer() {
-    //             return;
-    //         }
-
-    //         // convert to the right output format
-    //         match data.sample_format() {
-    //             SampleFormat::I8 => self.fill_from_internal::<i8>(data.as_slice_mut().unwrap()),
-    //             SampleFormat::I16 => self.fill_from_internal::<i16>(data.as_slice_mut().unwrap()),
-    //             SampleFormat::I32 => self.fill_from_internal::<i32>(data.as_slice_mut().unwrap()),
-    //             SampleFormat::I64 => self.fill_from_internal::<i64>(data.as_slice_mut().unwrap()),
-    //             SampleFormat::U8 => self.fill_from_internal::<u8>(data.as_slice_mut().unwrap()),
-    //             SampleFormat::U16 => self.fill_from_internal::<u16>(data.as_slice_mut().unwrap()),
-    //             SampleFormat::U32 => self.fill_from_internal::<u32>(data.as_slice_mut().unwrap()),
-    //             SampleFormat::U64 => self.fill_from_internal::<u64>(data.as_slice_mut().unwrap()),
-    //             SampleFormat::F32 => self.fill_from_internal::<f32>(data.as_slice_mut().unwrap()),
-    //             SampleFormat::F64 => self.fill_from_internal::<f64>(data.as_slice_mut().unwrap()),
-    //             /*
-    //             I want to support all formats. This panic being triggered means that there is a version
-    //             mismatch between cpal and this library.
-    //             */
-    //             _ => panic!("Sample Format not supported."),
-    //         }
-
-    //         self.send_state(Some(info.timestamp()));
-    //     }
-    // }
-
-    // // unsure wether i want to use this or untyped_callback
-    // // also relevant when cpal gets made into a generic that maybe this gets useful
+    // unsure wether i want to use this or untyped_callback
+    // also relevant when cpal gets made into a generic that maybe this gets useful
     pub fn get_typed_callback<Sample: dasp::sample::Sample + dasp::sample::FromSample<f32>>(
         mut self,
     ) -> impl FnMut(&mut [Sample], Info) {
         move |data, info| {
-            assert_eq!(
-                data.len(),
-                usize::try_from(self.config.buffer_size).unwrap()
-                    * usize::from(self.config.channel_count.get())
-            );
+            // assert_eq!(
+            //     data.len(),
+            //     usize::try_from(self.config.buffer_size).unwrap()
+            //         * usize::from(self.config.channel_count.get())
+            // );
 
             if self.fill_internal_buffer() {
                 self.fill_from_internal(data);
             }
             self.send_state(Some(info));
         }
+        // move |data, info| {
+        //     assert_eq!(
+        //         data.len(),
+        //         usize::try_from(self.config.buffer_size).unwrap()
+        //             * usize::from(self.config.channel_count.get())
+        //     );
+        // self.send_state(Some(info));
+        // }
     }
 
     // pub fn get_callback(mut self) -> impl FnMut(&mut [Frame], S::BufferInformation) {

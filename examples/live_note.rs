@@ -12,7 +12,7 @@ use tracker_engine::{
 };
 
 fn main() {
-    let mut manager = AudioManager::new(Song::default());
+    let mut manager: AudioManager<cpal::OutputStreamTimestamp> = AudioManager::new(Song::default());
     let mut reader =
         hound::WavReader::open("test-files/coin hat with plastic scrunch-JD.wav").unwrap();
     let spec = reader.spec();
@@ -56,11 +56,11 @@ fn main() {
     manager
         .try_msg_worker(ToWorkerMsg::PlayEvent(note_event))
         .unwrap();
-    std::thread::sleep(Duration::from_secs(1));
-    manager
-        .try_msg_worker(ToWorkerMsg::PlayEvent(note_event))
-        .unwrap();
-    std::thread::sleep(Duration::from_secs(1));
-    println!("{:?}", manager.playback_status());
-    manager.close_stream(stream);
+    // std::thread::sleep(Duration::from_secs(1));
+    // manager
+    //     .try_msg_worker(ToWorkerMsg::PlayEvent(note_event))
+    //     .unwrap();
+    std::thread::sleep(Duration::from_secs(6));
+    // println!("{:?}", manager.playback_status());
+    // manager.close_stream(stream);
 }

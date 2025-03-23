@@ -111,7 +111,7 @@ pub struct PlaybackState<'sample, const GC: bool> {
     // add current state to support Effects
     samplerate: u32,
 
-    voices: Box<[Option<SamplePlayer<'sample, GC>>; PlaybackState::<true>::VOICES]>,
+    voices: [Option<SamplePlayer<'sample, GC>>; PlaybackState::<true>::VOICES],
 }
 
 impl<'sample, const GC: bool> PlaybackState<'sample, GC> {
@@ -156,7 +156,7 @@ macro_rules! new {
             tick: $song.initial_speed,
             frame: Self::frames_per_tick($samplerate, $song.initial_tempo),
             $samplerate,
-            voices: Box::new(std::array::from_fn(|_| None)),
+            voices: std::array::from_fn(|_| None),
         };
         out.iter::<0>($song).create_sample_players();
         Some(out)

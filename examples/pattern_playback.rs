@@ -56,7 +56,7 @@ fn main() {
     .unwrap();
 
     song.finish();
-    dbg!(manager.get_song());
+    // dbg!(manager.get_song());
 
     let host = cpal::default_host();
     let default_device = host.default_output_device().unwrap();
