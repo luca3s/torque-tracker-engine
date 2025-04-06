@@ -43,117 +43,12 @@ impl SendResult {
     }
 }
 
-/// This shouldn't get dropped as that will leak the stream.
-/// Close it by passing it to AudioManager::close_stream
-// this struct prevents a user of the library from closing the Stream by dropping it
-pub struct StreamHandle<S>(ManuallyDrop<S>);
-
-impl<S> Deref for StreamHandle<S> {
-    type Target = S;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl<S> Drop for StreamHandle<S> {
-    fn drop(&mut self) {
-        eprintln!("StreamHandle dropped. Stream should be closed by passing it to AudioManager::close_stream")
-    }
-}
-
-pub trait StreamBuilder {
-    /// Error when creating the stream
-    type CreateErr;
-    /// Error while the stream is running
-    type StreamErr: Debug;
-    /// Stream that is created
-    type Stream;
-    /// Information given to each buffer callback. Will be made available to the outside code via the Manager
-    type BufferInformation: Send + Clone + 'static;
-    fn create(
-        self,
-        data_callback: impl FnMut(&mut [f32], Self::BufferInformation)
-            + Send
-            + 'static,
-        err_callback: impl FnMut(Self::StreamErr) + Send + 'static,
-        config: OutputConfig,
-    ) -> Result<Self::Stream, Self::CreateErr>;
-}
-
-#[cfg(feature = "cpal")]
-mod cpal {
-    use std::num::NonZeroU16;
-
-    use cpal::traits::StreamTrait;
-
-    use super::{OutputConfig, StreamBuilder};
-
-    impl<Device: cpal::traits::DeviceTrait> StreamBuilder for &Device {
-        type CreateErr = cpal::BuildStreamError;
-        type StreamErr = cpal::StreamError;
-        type Stream = Device::Stream;
-        type BufferInformation = cpal::OutputStreamTimestamp;
-        fn create(
-            self,
-            mut data_callback: impl FnMut(
-                    &mut [f32],
-                    Self::BufferInformation,
-                ) + Send
-                + 'static,
-            err_callback: impl FnMut(Self::StreamErr) + Send + 'static,
-            config: OutputConfig,
-        ) -> Result<Self::Stream, Self::CreateErr> {
-            let stream = self.build_output_stream_raw(
-                &config.into(),
-                cpal::SampleFormat::F32,
-                move |d, i| {
-                    let d = d.as_slice_mut().unwrap();
-                    data_callback(d, i.timestamp())
-                },
-                err_callback,
-                None,
-            );
-            stream.inspect(|s|{
-                // this error is unlikely to ever happen. We just interacted with the device when starting the stream so interacting with it now should work.
-                let _ = s.play().inspect_err(|e| eprintln!("error while starting the stream {}", e));
-            })
-        }
-    }
-
-    impl From<OutputConfig> for cpal::StreamConfig {
-        fn from(value: OutputConfig) -> Self {
-            cpal::StreamConfig {
-                channels: value.channel_count.into(),
-                sample_rate: cpal::SampleRate(value.sample_rate),
-                buffer_size: cpal::BufferSize::Fixed(value.buffer_size),
-            }
-        }
-    }
-
-    impl TryFrom<cpal::StreamConfig> for OutputConfig {
-        type Error = ();
-
-        /// fails if BufferSize isn't explicit or zero output channels are specified.
-        fn try_from(value: cpal::StreamConfig) -> Result<Self, Self::Error> {
-            match value.buffer_size {
-                cpal::BufferSize::Default => Err(()),
-                cpal::BufferSize::Fixed(size) => Ok(OutputConfig {
-                    buffer_size: size,
-                    channel_count: NonZeroU16::try_from(value.channels).map_err(|_| ())?,
-                    sample_rate: value.sample_rate.0,
-                }),
-            }
-        }
-    }
-}
-
 /// Communication to and from an active Stream
 #[derive(Debug)]
-struct ActiveStreamComms<BufferInfo: Send + Clone> {
+struct ActiveStreamComms {
     buffer_time: Duration,
     send: rtrb::Producer<ToWorkerMsg>,
-    status: triple_buffer::Output<(Option<PlaybackStatus>, Option<BufferInfo>)>,
+    status: triple_buffer::Output<Option<PlaybackStatus>>,
 }
 
 #[derive(Debug, Default)]
@@ -197,13 +92,17 @@ impl Collector {
 
 /// You will need to write your own spin loops.
 /// For that you can and maybe should use AudioManager::buffer_time.
-pub struct AudioManager<BufferInfo: Send + Clone + 'static> {
+///
+/// The Stream API is not "Rusty" and not ergonimic to use, but Stream are often not Send, while the Manager is
+/// suited well for being in a Global Mutex. This is why the Stream can't live inside the Manager. If you can
+/// think of a better API i would love to replace this.
+pub struct AudioManager {
     song: Writer<Song<true>, ValidOperation>,
     gc: Collector,
-    stream_comms: Option<ActiveStreamComms<BufferInfo>>,
+    stream_comms: Option<ActiveStreamComms>,
 }
 
-impl<BufferInfo: Send + Clone + 'static> AudioManager<BufferInfo> {
+impl AudioManager {
     pub fn new(song: Song<false>) -> Self {
         let mut gc = Collector::default();
         let left_right = simple_left_right::Writer::new(song.to_gc(&mut gc));
@@ -215,6 +114,8 @@ impl<BufferInfo: Send + Clone + 'static> AudioManager<BufferInfo> {
         }
     }
 
+    /// If this returns None, waiting buffer_time should (weird threading issues aside) always be enough time
+    /// and it should return Some after that.
     pub fn try_edit_song(&mut self) -> Option<SongEdit<'_>> {
         self.song.try_lock().map(|song| SongEdit {
             song,
@@ -242,9 +143,7 @@ impl<BufferInfo: Send + Clone + 'static> AudioManager<BufferInfo> {
     }
 
     /// last playback status sent by the audio worker
-    pub fn playback_status(
-        &mut self,
-    ) -> Option<&(Option<PlaybackStatus>, Option<BufferInfo>)> {
+    pub fn playback_status(&mut self) -> Option<&Option<PlaybackStatus>> {
         self.stream_comms.as_mut().map(|s| s.status.read())
     }
 
@@ -259,36 +158,32 @@ impl<BufferInfo: Send + Clone + 'static> AudioManager<BufferInfo> {
 
     /// If the config specifies more than two channels only the first two will be filled with audio.
     /// The rest gets silence.
-    pub fn init_audio<Builder>(
+    ///
+    /// The callback in for example Cpal provides an additional arguement, where a timestamp is give.
+    /// That should ba handled by wrapping this function in another callback, where this argument could
+    /// then be ignored or send somewhere for processing. This Sending needs to happen wait-free!! There are
+    /// a couple of libaries that can do this, i would recommend triple_buffer.
+    ///
+    /// The OutputConfig has to match the config of the AudioStream that will call this. If for example the
+    /// buffer size is different Panics will occur.
+    ///
+    /// In my testing i noticed that when using Cpal with non-standard buffer sizes Cpal would just give
+    /// another buffer size. This will also lead to panics.
+    ///
+    /// The stream has to closed before dropping the Manager and the manager has to be notified by calling stream_closed.
+    #[must_use]
+    pub fn get_callback<Sample: dasp::sample::Sample + dasp::sample::FromSample<f32>>(
         &mut self,
-        create_stream: Builder,
         config: OutputConfig,
-    ) -> Result<StreamHandle<Builder::Stream>, Builder::CreateErr>
-    where
-        Builder: StreamBuilder<BufferInformation = BufferInfo>,
-    {
+    ) -> impl FnMut(&mut [Sample]) {
         const TO_WORKER_CAPACITY: usize = 5;
 
         assert!(self.stream_comms.is_none(), "Stream already active");
-        let from_worker = triple_buffer::triple_buffer(&(None, None));
+        let from_worker = triple_buffer::triple_buffer(&None);
         let to_worker = rtrb::RingBuffer::new(TO_WORKER_CAPACITY);
         let reader = self.song.build_reader().unwrap();
 
-        let audio_worker =
-            LiveAudio::<BufferInfo>::new(reader, to_worker.1, from_worker.0, config);
-
-        // let stream = device.build_output_stream_raw(
-        //     &config.into(),
-        //     cpal::SampleFormat::F32,
-        //     audio_worker.get_generic_callback(),
-        //     |err| println!("{err}"),
-        //     None,
-        // )?;
-        let stream = create_stream.create(
-            audio_worker.get_typed_callback(),
-            |err| eprintln!("{err:?}"),
-            config,
-        )?;
+        let audio_worker = LiveAudio::new(reader, to_worker.1, from_worker.0, config);
         let buffer_time =
             Duration::from_millis((config.buffer_size * 1000 / config.buffer_size).into());
 
@@ -298,19 +193,16 @@ impl<BufferInfo: Send + Clone + 'static> AudioManager<BufferInfo> {
             status: from_worker.1,
         });
 
-        Ok(StreamHandle(ManuallyDrop::new(stream)))
+        audio_worker.get_typed_callback()
     }
 
-    pub fn close_stream<S>(&mut self, stream: StreamHandle<S>) {
-        self.stream_comms.take().expect("stream wasn't active");
-        let mut stream = ManuallyDrop::new(stream);
-        unsafe {
-            ManuallyDrop::drop(&mut stream.0);
-        }
+    /// When closing the Stream this method should be called.
+    pub fn stream_closed(&mut self) {
+        self.stream_comms = None
     }
 }
 
-impl<BufferInfo: Send + Clone> Drop for AudioManager<BufferInfo> {
+impl Drop for AudioManager {
     fn drop(&mut self) {
         // try to stop playback if a stream is active
         if let Some(stream) = &mut self.stream_comms {
@@ -324,15 +216,6 @@ impl<BufferInfo: Send + Clone> Drop for AudioManager<BufferInfo> {
                 eprintln!("Audio playback was stopped");
             }
         }
-        // try to clean up as much memory as possible
-        let mut song = self.try_edit_song().unwrap();
-        for i in 0..Song::<true>::MAX_SAMPLES {
-            song.apply_operation(SongOperation::RemoveSample(i))
-                .unwrap();
-        }
-        song.finish();
-        // lock it once more to ensure that the changes were propagated
-        self.try_edit_song().unwrap();
         self.gc.collect();
         // provide a diagnostic when memory is dropped incorrectly
         let count = self.gc.sample_count();
@@ -341,7 +224,7 @@ impl<BufferInfo: Send + Clone> Drop for AudioManager<BufferInfo> {
             panic!("Collector bug");
         }
         if count != 0 {
-            eprintln!("Audio stream wasn't closed before dropping the AudioManager. {} samples were droppen on the audio thread", count)
+            eprintln!("Audio stream wasn't closed before dropping the AudioManager. {} samples will be droppen on the audio thread", count)
         }
     }
 }

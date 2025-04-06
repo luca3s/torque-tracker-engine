@@ -9,12 +9,12 @@ use crate::project::song::Song;
 use dasp::sample::ToSample;
 use simple_left_right::Reader;
 
-pub(crate) struct LiveAudio<Info: Send> {
+pub(crate) struct LiveAudio {
     song: Reader<Song<true>>,
     playback_state: Option<PlaybackState<'static, true>>,
     live_note: Option<SamplePlayer<'static, true>>,
     manager: rtrb::Consumer<ToWorkerMsg>,
-    state_sender: triple_buffer::Input<(Option<PlaybackStatus>, Option<Info>)>,
+    state_sender: triple_buffer::Input<Option<PlaybackStatus>>,
     config: OutputConfig,
 
     buffer: Box<[Frame]>,
@@ -22,12 +22,12 @@ pub(crate) struct LiveAudio<Info: Send> {
 
 const INTERPOLATION: u8 = Interpolation::Linear as u8;
 
-impl<Info: Send> LiveAudio<Info> {
+impl LiveAudio {
     /// Not realtime safe.
     pub fn new(
         song: Reader<Song<true>>,
         manager: rtrb::Consumer<ToWorkerMsg>,
-        state_sender: triple_buffer::Input<(Option<PlaybackStatus>, Option<Info>)>,
+        state_sender: triple_buffer::Input<Option<PlaybackStatus>>,
         config: OutputConfig,
     ) -> Self {
         Self {
@@ -42,9 +42,9 @@ impl<Info: Send> LiveAudio<Info> {
     }
 
     #[cfg_attr(feature = "rtsan", rtsan_standalone::nonblocking)]
-    fn send_state(&mut self, info: Option<Info>) {
+    fn send_state(&mut self) {
         self.state_sender
-            .write((self.playback_state.as_ref().map(|s| s.get_status()), info));
+            .write(self.playback_state.as_ref().map(|s| s.get_status()));
     }
 
     // #[inline(never)]
@@ -137,8 +137,8 @@ impl<Info: Send> LiveAudio<Info> {
     // also relevant when cpal gets made into a generic that maybe this gets useful
     pub fn get_typed_callback<Sample: dasp::sample::Sample + dasp::sample::FromSample<f32>>(
         mut self,
-    ) -> impl FnMut(&mut [Sample], Info) {
-        move |data, info| {
+    ) -> impl FnMut(&mut [Sample]) {
+        move |data| {
             // assert_eq!(
             //     data.len(),
             //     usize::try_from(self.config.buffer_size).unwrap()
@@ -148,7 +148,7 @@ impl<Info: Send> LiveAudio<Info> {
             if self.fill_internal_buffer() {
                 self.fill_from_internal(data);
             }
-            self.send_state(Some(info));
+            self.send_state();
         }
         // move |data, info| {
         //     assert_eq!(
