@@ -12,7 +12,7 @@ use tracker_engine::{
 };
 
 fn main() {
-    let mut manager: AudioManager<cpal::OutputStreamTimestamp> = AudioManager::new(Song::default());
+    let mut manager = AudioManager::new(Song::default());
     let mut reader =
         hound::WavReader::open("test-files/coin hat with plastic scrunch-JD.wav").unwrap();
     let spec = reader.spec();
@@ -45,7 +45,15 @@ fn main() {
         sample_rate: default_config.sample_rate().0,
     };
 
-    let stream = manager.init_audio(&default_device, config).unwrap();
+    let mut audio_callback = manager.get_callback::<f32>(config);
+    let stream = default_device
+        .build_output_stream(
+            &default_config.config(),
+            move |data, _| audio_callback(data),
+            |e| eprintln!("{e:?}"),
+            None,
+        )
+        .unwrap();
 
     let note_event = NoteEvent {
         note: Note::new(90).unwrap(),
@@ -62,5 +70,6 @@ fn main() {
     //     .unwrap();
     std::thread::sleep(Duration::from_secs(6));
     // println!("{:?}", manager.playback_status());
-    // manager.close_stream(stream);
+    drop(stream);
+    manager.stream_closed();
 }

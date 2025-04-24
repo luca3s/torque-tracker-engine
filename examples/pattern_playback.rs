@@ -69,7 +69,15 @@ fn main() {
         sample_rate: default_config.sample_rate().0,
     };
 
-    let stream = manager.init_audio(&default_device, config).unwrap();
+    let mut callback = manager.get_callback::<f32>(config);
+    let stream = default_device
+        .build_output_stream(
+            &default_config.config(),
+            move |data, _| callback(data),
+            |e| eprintln!("{e:?}"),
+            None,
+        )
+        .unwrap();
 
     manager
         .try_msg_worker(ToWorkerMsg::Playback(PlaybackSettings::default()))
@@ -77,5 +85,6 @@ fn main() {
 
     std::thread::sleep(Duration::from_secs(5));
     println!("{:?}", manager.playback_status());
-    manager.close_stream(stream);
+    drop(stream);
+    manager.stream_closed();
 }
