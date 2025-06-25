@@ -9,21 +9,19 @@ use tracker_engine::{
         pattern::{InPatternPosition, PatternOperation},
         song::{Song, SongOperation},
     },
-    sample::{OwnedSample, SampleMetaData},
+    sample::{Sample, SampleMetaData},
 };
 
 fn main() {
     let mut manager = AudioManager::new(Song::default());
-    let mut reader =
-        hound::WavReader::open("test-files/coin hat with plastic scrunch-JD.wav").unwrap();
+    let mut reader = hound::WavReader::open("test-files/770_Hz_Tone.wav").unwrap();
     let spec = reader.spec();
     println!("sample specs: {spec:?}");
     assert!(spec.channels == 1);
-    let sample_data: Box<[i16]> = reader
+    let sample_data = reader
         .samples::<i16>()
-        .map(|result| result.unwrap())
-        .collect();
-    let sample = OwnedSample::MonoI16(sample_data);
+        .map(|result| <f32 as dasp::Sample>::from_sample(result.unwrap()));
+    let sample = Sample::new_mono(sample_data);
     let meta = SampleMetaData {
         sample_rate: spec.sample_rate,
         base_note: Note::new(64).unwrap(),
@@ -36,11 +34,11 @@ fn main() {
     for i in 0..12 {
         let command = PatternOperation::SetEvent {
             position: InPatternPosition {
-                row: i,
+                row: i * 2,
                 channel: i as u8,
             },
             event: NoteEvent {
-                note: Note::new(60 + i as u8).unwrap(),
+                note: Note::new(60 + (i as u8) * 2).unwrap(),
                 sample_instr: 0,
                 vol: VolumeEffect::None,
                 command: NoteCommand::None,
@@ -56,7 +54,6 @@ fn main() {
     .unwrap();
 
     song.finish();
-    // dbg!(manager.get_song());
 
     let host = cpal::default_host();
     let default_device = host.default_output_device().unwrap();
@@ -64,12 +61,20 @@ fn main() {
     println!("default config {:?}", default_config);
     println!("device: {:?}", default_device.name());
     let config = OutputConfig {
-        buffer_size: 32,
+        buffer_size: 1024,
         channel_count: NonZeroU16::new(2).unwrap(),
         sample_rate: default_config.sample_rate().0,
     };
 
-    let stream = manager.init_audio(&default_device, config).unwrap();
+    let mut callback = manager.get_callback::<f32>(config);
+    let stream = default_device
+        .build_output_stream(
+            &default_config.config(),
+            move |data, _| callback(data),
+            |e| eprintln!("{e:?}"),
+            None,
+        )
+        .unwrap();
 
     manager
         .try_msg_worker(ToWorkerMsg::Playback(PlaybackSettings::default()))
@@ -77,5 +82,6 @@ fn main() {
 
     std::thread::sleep(Duration::from_secs(5));
     println!("{:?}", manager.playback_status());
-    manager.close_stream(stream);
+    drop(stream);
+    manager.stream_closed();
 }

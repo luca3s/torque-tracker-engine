@@ -1,4 +1,4 @@
-use std::{fmt::Debug, mem::ManuallyDrop, num::NonZeroU16, ops::Deref, sync::Arc, time::Duration};
+use std::{fmt::Debug, num::NonZeroU16, time::Duration};
 
 use simple_left_right::{WriteGuard, Writer};
 
@@ -9,7 +9,7 @@ use crate::{
         note_event::NoteEvent,
         song::{Song, SongOperation, ValidOperation},
     },
-    sample::{OwnedSample, SharedSample},
+    sample::Sample,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -53,40 +53,19 @@ struct ActiveStreamComms {
 
 #[derive(Debug, Default)]
 pub(crate) struct Collector {
-    samples: Vec<SharedSample>,
+    samples: Vec<Sample>,
 }
 
 impl Collector {
-    pub fn add_sample(&mut self, sample: OwnedSample) -> SharedSample {
-        let sample = match sample {
-            OwnedSample::MonoF32(data) => SharedSample::MonoF32(data.into()),
-            OwnedSample::MonoI16(data) => SharedSample::MonoI16(data.into()),
-            OwnedSample::MonoI8(data) => SharedSample::MonoI8(data.into()),
-            OwnedSample::StereoF32(data) => SharedSample::StereoF32(data.into()),
-            OwnedSample::StereoI16(data) => SharedSample::StereoI16(data.into()),
-            OwnedSample::StereoI8(data) => SharedSample::StereoI8(data.into()),
-        };
-
-        self.samples.push(sample.clone());
-        sample
+    pub fn add_sample(&mut self, sample: Sample) {
+        self.samples.push(sample);
     }
 
     fn collect(&mut self) {
         self.samples.retain(|s| {
             // only look at strong count as weak pointers are not used
-            match s {
-                SharedSample::MonoF32(arc) => Arc::strong_count(arc) != 1,
-                SharedSample::MonoI16(arc) => Arc::strong_count(arc) != 1,
-                SharedSample::MonoI8(arc) => Arc::strong_count(arc) != 1,
-                SharedSample::StereoF32(arc) => Arc::strong_count(arc) != 1,
-                SharedSample::StereoI16(arc) => Arc::strong_count(arc) != 1,
-                SharedSample::StereoI8(arc) => Arc::strong_count(arc) != 1,
-            }
+            s.strongcount() != 1
         });
-    }
-
-    fn sample_count(&self) -> usize {
-        self.samples.len()
     }
 }
 
@@ -97,15 +76,18 @@ impl Collector {
 /// suited well for being in a Global Mutex. This is why the Stream can't live inside the Manager. If you can
 /// think of a better API i would love to replace this.
 pub struct AudioManager {
-    song: Writer<Song<true>, ValidOperation>,
+    song: Writer<Song, ValidOperation>,
     gc: Collector,
     stream_comms: Option<ActiveStreamComms>,
 }
 
 impl AudioManager {
-    pub fn new(song: Song<false>) -> Self {
+    pub fn new(song: Song) -> Self {
         let mut gc = Collector::default();
-        let left_right = simple_left_right::Writer::new(song.to_gc(&mut gc));
+        for (_, sample) in song.samples.iter().flatten() {
+            gc.add_sample(sample.clone());
+        }
+        let left_right = simple_left_right::Writer::new(song);
 
         Self {
             song: left_right,
@@ -123,7 +105,7 @@ impl AudioManager {
         })
     }
 
-    pub fn get_song(&self) -> &Song<true> {
+    pub fn get_song(&self) -> &Song {
         self.song.read()
     }
 
@@ -171,7 +153,6 @@ impl AudioManager {
     /// another buffer size. This will also lead to panics.
     ///
     /// The stream has to closed before dropping the Manager and the manager has to be notified by calling stream_closed.
-    #[must_use]
     pub fn get_callback<Sample: dasp::sample::Sample + dasp::sample::FromSample<f32>>(
         &mut self,
         config: OutputConfig,
@@ -216,16 +197,6 @@ impl Drop for AudioManager {
                 eprintln!("Audio playback was stopped");
             }
         }
-        self.gc.collect();
-        // provide a diagnostic when memory is dropped incorrectly
-        let count = self.gc.sample_count();
-        // no stream is active => we should be able to clean up all the memory.
-        if count != 0 && self.stream_comms.is_none() {
-            panic!("Collector bug");
-        }
-        if count != 0 {
-            eprintln!("Audio stream wasn't closed before dropping the AudioManager. {} samples will be droppen on the audio thread", count)
-        }
     }
 }
 
@@ -236,7 +207,7 @@ impl Drop for AudioManager {
 /// when doing mulitple operations this object should be kept as it is
 #[derive(Debug)]
 pub struct SongEdit<'a> {
-    song: WriteGuard<'a, Song<true>, ValidOperation>,
+    song: WriteGuard<'a, Song, ValidOperation>,
     gc: &'a mut Collector,
 }
 
@@ -247,7 +218,7 @@ impl SongEdit<'_> {
         Ok(())
     }
 
-    pub fn song(&self) -> &Song<true> {
+    pub fn song(&self) -> &Song {
         self.song.read()
     }
 

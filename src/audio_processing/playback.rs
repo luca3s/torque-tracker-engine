@@ -27,7 +27,7 @@ pub struct PlaybackPosition {
 
 impl PlaybackPosition {
     #[inline]
-    fn step_row<const GC: bool>(&mut self, song: &Song<GC>) -> ControlFlow<()> {
+    fn step_row(&mut self, song: &Song) -> ControlFlow<()> {
         self.row += 1;
         if self.row >= song.patterns[self.pattern].row_count() {
             // reset row count
@@ -38,7 +38,7 @@ impl PlaybackPosition {
                 if let Some(pattern) = song.next_pattern(order) {
                     // song not finished yet
                     self.pattern = pattern.into();
-                    return ControlFlow::Continue(());
+                    ControlFlow::Continue(())
                 } else {
                     // song is finished
                     if !self.loop_active {
@@ -50,10 +50,10 @@ impl PlaybackPosition {
                     *order = 0;
                     if let Some(pattern) = song.next_pattern(order) {
                         self.pattern = pattern.into();
-                        return ControlFlow::Continue(());
+                        ControlFlow::Continue(())
                     } else {
                         // the song is empty, so playback is stopped
-                        return ControlFlow::Break(());
+                        ControlFlow::Break(())
                     }
                 }
             } else if self.loop_active {
@@ -70,8 +70,7 @@ impl PlaybackPosition {
     }
 
     /// if settings specify a pattern pattern always returns Some
-    #[inline]
-    fn new<const GC: bool>(settings: PlaybackSettings, song: &Song<GC>) -> Option<Self> {
+    fn new(settings: PlaybackSettings, song: &Song) -> Option<Self> {
         match settings {
             PlaybackSettings::Pattern { idx, should_loop } => {
                 if idx < song.patterns.len() {
@@ -101,7 +100,7 @@ impl PlaybackPosition {
     }
 }
 
-pub struct PlaybackState<'sample, const GC: bool> {
+pub struct PlaybackState {
     position: PlaybackPosition,
     is_done: bool,
     // both of these count down
@@ -111,16 +110,16 @@ pub struct PlaybackState<'sample, const GC: bool> {
     // add current state to support Effects
     samplerate: u32,
 
-    voices: [Option<SamplePlayer<'sample, GC>>; PlaybackState::<true>::VOICES],
+    voices: [Option<SamplePlayer>; PlaybackState::VOICES],
 }
 
-impl<'sample, const GC: bool> PlaybackState<'sample, GC> {
+impl PlaybackState {
     pub const VOICES: usize = 256;
 
     pub fn iter<'playback, 'song, const INTERPOLATION: u8>(
         &'playback mut self,
-        song: &'song Song<GC>,
-    ) -> PlaybackIter<'sample, 'song, 'playback, INTERPOLATION, GC> {
+        song: &'song Song,
+    ) -> PlaybackIter<'song, 'playback, INTERPOLATION> {
         PlaybackIter { state: self, song }
     }
 
@@ -148,51 +147,31 @@ impl<'sample, const GC: bool> PlaybackState<'sample, GC> {
     }
 }
 
-macro_rules! new {
-    ($song:ident, $samplerate:ident, $settings:ident) => {{
+impl PlaybackState {
+    /// None if the settings in the order variant don't have any pattern to play
+    pub fn new(song: &Song, samplerate: u32, settings: PlaybackSettings) -> Option<Self> {
         let mut out = Self {
-            position: PlaybackPosition::new($settings, $song)?,
+            position: PlaybackPosition::new(settings, song)?,
             is_done: false,
-            tick: $song.initial_speed,
-            frame: Self::frames_per_tick($samplerate, $song.initial_tempo),
-            $samplerate,
+            tick: song.initial_speed,
+            frame: Self::frames_per_tick(samplerate, song.initial_tempo),
+            samplerate,
             voices: std::array::from_fn(|_| None),
         };
-        out.iter::<0>($song).create_sample_players();
+        // Interpolation not important here. no interpolating is done. only sampledata is copied
+        out.iter::<0>(song).create_sample_players();
         Some(out)
-    }};
-}
-
-impl PlaybackState<'static, true> {
-    /// None if the settings in the order variant don't have any pattern to play
-    pub(crate) fn new(
-        song: &Song<true>,
-        samplerate: u32,
-        settings: PlaybackSettings,
-    ) -> Option<Self> {
-        new!(song, samplerate, settings)
     }
 }
 
-impl<'sample> PlaybackState<'sample, false> {
-    /// None if the settings in the order variant don't have any pattern to play
-    pub fn new(
-        song: &'sample Song<false>,
-        samplerate: u32,
-        settings: PlaybackSettings,
-    ) -> Option<Self> {
-        new!(song, samplerate, settings)
-    }
-}
-
-impl<const GC: bool> std::fmt::Debug for PlaybackState<'_, GC> {
+impl std::fmt::Debug for PlaybackState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PlaybackState")
             .field("position", &self.position)
             .field("tick", &self.tick)
             .field("frame", &self.frame)
             .field("samplerate", &self.samplerate)
-            .finish()?;
+            .finish_non_exhaustive()?;
         write!(
             f,
             "active channels: {}",
@@ -201,78 +180,32 @@ impl<const GC: bool> std::fmt::Debug for PlaybackState<'_, GC> {
     }
 }
 
-pub struct PlaybackIter<'sample, 'song, 'playback, const INTERPOLATION: u8, const GC: bool> {
-    state: &'playback mut PlaybackState<'sample, GC>,
-    song: &'song Song<GC>,
+pub struct PlaybackIter<'song, 'playback, const INTERPOLATION: u8> {
+    state: &'playback mut PlaybackState,
+    song: &'song Song,
 }
 
-impl<const INTERPOLATION: u8, const GC: bool> PlaybackIter<'_, '_, '_, INTERPOLATION, GC> {
+impl<const INTERPOLATION: u8> PlaybackIter<'_, '_, INTERPOLATION> {
     pub fn frames_per_tick(&self) -> u32 {
-        PlaybackState::<GC>::frames_per_tick(self.state.samplerate, self.song.initial_tempo)
-    }
-
-    /// do everything needed for stepping except for putting the samples into the voices.
-    /// on true that needs to be done otherwise not.
-    /// true also means that the PlaybackPosition has changed.
-    /// Also sets state.is_done if needed
-    fn step_generic(&mut self) -> bool {
-        if self.state.frame > 0 {
-            self.state.frame -= 1;
-            return false;
-        } else {
-            self.state.frame = self.frames_per_tick();
-        }
-
-        if self.state.tick > 0 {
-            self.state.tick -= 1;
-            return false;
-        } else {
-            self.state.tick = self.song.initial_speed;
-        }
-
-        match self.state.position.step_row(self.song) {
-            ControlFlow::Continue(_) => true,
-            ControlFlow::Break(_) => {
-                self.state.is_done = true;
-                false
-            }
-        }
+        PlaybackState::frames_per_tick(self.state.samplerate, self.song.initial_tempo)
     }
 }
 
-/// While the Code is completely identical the types and functions are different.
-/// The compiler inferes the right types for each macro call
-macro_rules! create_sample_players {
-    ($sel:ident) => {
-        for (positions, event) in
-            &$sel.song.patterns[$sel.state.position.pattern][$sel.state.position.row]
-        {
-            if let Some((meta, sample)) = &$sel.song.samples[usize::from(event.sample_instr)] {
-                let player = SamplePlayer::new(
-                    (*meta, sample.get_handle()),
-                    $sel.state.samplerate,
-                    event.note,
-                );
-                $sel.state.voices[usize::from(positions.channel)] = Some(player);
-            }
-        }
-    };
-}
+impl<const INTERPOLATION: u8> Iterator for PlaybackIter<'_, '_, INTERPOLATION> {
+    type Item = Frame;
 
-/// same as above macro
-macro_rules! next {
-    ($sel: ident) => {{
-        if $sel.state.is_done {
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.state.is_done {
             return None;
         }
 
-        let out = $sel
+        let out = self
             .state
             .voices
             .iter_mut()
             .flat_map(|channel| {
                 if let Some(voice) = channel {
-                    // this logic frees the voices as soon as possible
+                    // this logic removes the voices as soon as possible
                     let out = voice.next::<INTERPOLATION>().unwrap();
                     if voice.check_position().is_break() {
                         *channel = None;
@@ -291,52 +224,41 @@ macro_rules! next {
                 }
             })
             .sum();
-        $sel.step();
+        self.step();
         Some(out)
-    }};
+    }
 }
 
-impl<const INTERPOLATION: u8> PlaybackIter<'static, '_, '_, INTERPOLATION, true> {
+impl<const INTERPOLATION: u8> PlaybackIter<'_, '_, INTERPOLATION> {
     fn step(&mut self) {
-        if self.step_generic() {
-            self.create_sample_players();
+        if self.state.frame > 0 {
+            self.state.frame -= 1;
+            return;
+        } else {
+            self.state.frame = self.frames_per_tick();
+        }
+
+        if self.state.tick > 0 {
+            self.state.tick -= 1;
+            return;
+        } else {
+            self.state.tick = self.song.initial_speed;
+        }
+
+        match self.state.position.step_row(self.song) {
+            ControlFlow::Continue(_) => self.create_sample_players(),
+            ControlFlow::Break(_) => self.state.is_done = true,
         }
     }
     fn create_sample_players(&mut self) {
-        create_sample_players!(self)
-    }
-}
-
-impl<const INTERPOLATION: u8> Iterator for PlaybackIter<'static, '_, '_, INTERPOLATION, true> {
-    type Item = Frame;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        next!(self)
-    }
-}
-
-impl<'sample, 'song, const INTERPOLATION: u8> PlaybackIter<'sample, 'song, '_, INTERPOLATION, false>
-where
-    'song: 'sample,
-{
-    fn step(&mut self) {
-        if self.step_generic() {
-            self.create_sample_players();
+        for (position, event) in
+            &self.song.patterns[self.state.position.pattern][self.state.position.row]
+        {
+            if let Some((meta, ref sample)) = self.song.samples[usize::from(event.sample_instr)] {
+                let player =
+                    SamplePlayer::new(sample.clone(), meta, self.state.samplerate, event.note);
+                self.state.voices[usize::from(position.channel)] = Some(player);
+            }
         }
-    }
-    fn create_sample_players(&mut self) {
-        create_sample_players!(self)
-    }
-}
-
-impl<'sample, 'song, const INTERPOLATION: u8> Iterator
-    for PlaybackIter<'sample, 'song, '_, INTERPOLATION, false>
-where
-    'song: 'sample,
-{
-    type Item = Frame;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        next!(self)
     }
 }

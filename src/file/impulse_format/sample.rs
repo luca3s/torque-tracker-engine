@@ -70,16 +70,16 @@ enum ImpulseSampleEncoding {
     PCMDelta,
     IT2_14Comp,
     IT2_15Comp,
-    AMS,
-    DMF,
-    MDL,
-    PTM,
+    Ams,
+    Dmf,
+    Mdl,
+    Ptm,
     PCM16,
 }
 
 /// don't understand what bit 3 is supposed to do
 #[derive(Debug, Copy, Clone)]
-struct SampleFormatConvert(u8);
+pub struct SampleFormatConvert(u8);
 
 impl SampleFormatConvert {
     // alternative is unsigned

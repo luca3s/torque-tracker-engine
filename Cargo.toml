@@ -1,32 +1,26 @@
 [package]
-name = "tracker-engine"
+name = "torque-tracker-engine"
 version = "0.1.0"
 edition = "2021"
-authors = ["Lucas Baumann"]
+authors = ["Lucas Baumann <dev@lucasbaumann.de>"]
 rust-version = "1.82"
-license = "GPL-2.0" # take a look again
-description = "Rewrite of Schismtracker"
-repository = "https://github.com/luca3s/tracker-engine"
+license = "MPL-2.0"
+description = "Audio Backend of my reimplementation of Schismtracker."
 readme = "README.md"
 keywords = ["audio"]
 categories = ["audio"]
 
-[features]
-default = ["cpal"]
-cpal = ["dep:cpal"]
-rtsan = ["rtsan-standalone/enable"]
-
 [dependencies]
-cpal = { version = "0.15.3", optional = true }
 dasp = { version = "0.11.0", default-features = false, features = ["std"] }
 rtrb = "0.3.1"
-rtsan-standalone = { version = "0.1.1", optional = true }
+rtsan-standalone = "0.2.0"
 simple-left-right = "0.2.1"
 triple_buffer = "8.0.0"
 # assert_no_alloc
 
 [dev-dependencies]
 hound = "3.5.1"
+cpal = "0.16.0"
 
-[lints.clippy]
+[lints.rust]
 elided_lifetimes_in_paths = "warn"

@@ -1,4 +1,4 @@
-use tracker_engine::{
+use torque_tracker_engine::{
     audio_processing::playback::PlaybackState,
     file::impulse_format::header::PatternOrder,
     manager::PlaybackSettings,
@@ -8,30 +8,27 @@ use tracker_engine::{
         pattern::InPatternPosition,
         song::Song,
     },
-    sample::{OwnedSample, Sample, SampleMetaData},
+    sample::{Sample, SampleMetaData},
 };
 
 fn main() {
-    let mut reader =
-        hound::WavReader::open("test-files/coin hat with plastic scrunch-JD.wav").unwrap();
+    let mut reader = hound::WavReader::open("test-files/770_Hz_Tone.wav").unwrap();
     let spec = reader.spec();
     println!("sample specs: {spec:?}");
     assert!(spec.channels == 1);
-    let sample_data: Box<[i16]> = reader
+    let sample_data = reader
         .samples::<i16>()
-        // .map(|result| f32::from_sample(result.unwrap()))
-        .map(|result| result.unwrap())
-        .collect();
-    let sample = OwnedSample::MonoI16(sample_data);
+        .map(|result| <f32 as dasp::Sample>::from_sample(result.unwrap()));
+    let sample = Sample::new_mono(sample_data);
 
     let meta = SampleMetaData {
         sample_rate: spec.sample_rate,
         ..Default::default()
     };
 
-    let mut song: Song<false> = Song::default();
+    let mut song: Song = Song::default();
     song.pattern_order[0] = PatternOrder::Number(0);
-    song.samples[0] = Some((meta, Sample::<false>::new(sample)));
+    song.samples[0] = Some((meta, sample));
     song.patterns[0].set_event(
         InPatternPosition { row: 0, channel: 0 },
         NoteEvent {
@@ -51,8 +48,7 @@ fn main() {
         },
     );
 
-    let mut playback =
-        PlaybackState::<false>::new(&song, 44100, PlaybackSettings::default()).unwrap();
+    let mut playback = PlaybackState::new(&song, 44100, PlaybackSettings::default()).unwrap();
     let iter = playback.iter::<0>(&song);
     for _ in iter.take(50) {
         // dbg!(frame);

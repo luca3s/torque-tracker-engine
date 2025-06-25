@@ -1,4 +1,4 @@
-use err::{LoadDefect, LoadErr};
+use err::LoadErr;
 use impulse_format::{header, pattern};
 
 use crate::project::song::Song;
@@ -22,9 +22,7 @@ impl InFilePtr {
 ///
 /// R should be buffered in some way and not do a syscall on every read.
 /// If you ever find yourself using multiple different reader and/or handlers please open an issue on Github, i will change this to take &dyn.
-pub fn parse_song<R: std::io::Read + std::io::Seek>(
-    reader: &mut R,
-) -> Result<Song<false>, LoadErr> {
+pub fn parse_song<R: std::io::Read + std::io::Seek>(reader: &mut R) -> Result<Song, LoadErr> {
     //ignore defects
     let mut defect_handler = |_| ();
     let header = header::ImpulseHeader::parse(reader, &mut defect_handler)?;

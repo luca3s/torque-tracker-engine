@@ -1,30 +1,29 @@
 use std::{num::NonZeroU16, time::Duration};
 
 use cpal::traits::{DeviceTrait, HostTrait};
-use tracker_engine::{
+use torque_tracker_engine::{
     manager::{AudioManager, OutputConfig, ToWorkerMsg},
     project::{
         event_command::NoteCommand,
         note_event::{Note, NoteEvent, VolumeEffect},
         song::{Song, SongOperation},
     },
-    sample::{OwnedSample, SampleMetaData},
+    sample::{Sample, SampleMetaData},
 };
 
 fn main() {
-    let mut manager: AudioManager<cpal::OutputStreamTimestamp> = AudioManager::new(Song::default());
-    let mut reader =
-        hound::WavReader::open("test-files/coin hat with plastic scrunch-JD.wav").unwrap();
+    let mut manager = AudioManager::new(Song::default());
+    let mut reader = hound::WavReader::open("test-files/770_Hz_Tone.wav").unwrap();
     let spec = reader.spec();
     println!("sample specs: {spec:?}");
     assert!(spec.channels == 1);
-    let sample_data: Box<[i16]> = reader
+    let sample_data = reader
         .samples::<i16>()
-        .map(|result| result.unwrap())
-        .collect();
-    let sample = OwnedSample::MonoI16(sample_data);
+        .map(|result| <f32 as dasp::Sample>::from_sample(result.unwrap()));
+    let sample = Sample::new_mono(sample_data);
     let meta = SampleMetaData {
         sample_rate: spec.sample_rate,
+        default_volume: 150,
         ..Default::default()
     };
 
@@ -40,12 +39,20 @@ fn main() {
     println!("default config {:?}", default_config);
     println!("device: {:?}", default_device.name());
     let config = OutputConfig {
-        buffer_size: 32,
+        buffer_size: 2048,
         channel_count: NonZeroU16::new(2).unwrap(),
         sample_rate: default_config.sample_rate().0,
     };
 
-    let stream = manager.init_audio(&default_device, config).unwrap();
+    let mut audio_callback = manager.get_callback::<f32>(config);
+    let stream = default_device
+        .build_output_stream(
+            &default_config.config(),
+            move |data, _| audio_callback(data),
+            |e| eprintln!("{e:?}"),
+            None,
+        )
+        .unwrap();
 
     let note_event = NoteEvent {
         note: Note::new(90).unwrap(),
@@ -56,11 +63,11 @@ fn main() {
     manager
         .try_msg_worker(ToWorkerMsg::PlayEvent(note_event))
         .unwrap();
-    // std::thread::sleep(Duration::from_secs(1));
-    // manager
-    //     .try_msg_worker(ToWorkerMsg::PlayEvent(note_event))
-    //     .unwrap();
-    std::thread::sleep(Duration::from_secs(6));
-    // println!("{:?}", manager.playback_status());
-    // manager.close_stream(stream);
+    std::thread::sleep(Duration::from_secs(1));
+    manager
+        .try_msg_worker(ToWorkerMsg::PlayEvent(note_event))
+        .unwrap();
+    std::thread::sleep(Duration::from_secs(3));
+    drop(stream);
+    manager.stream_closed();
 }

@@ -114,7 +114,7 @@ impl Pattern {
         match op {
             PatternOperation::SetLength { new_len } => *new_len < Self::MAX_ROWS,
             PatternOperation::SetEvent { position, event: _ } => {
-                position.row < self.rows && position.channel as usize <= Song::<false>::MAX_CHANNELS
+                position.row < self.rows && position.channel as usize <= Song::MAX_CHANNELS
             }
             PatternOperation::RemoveEvent { position: _ } => true,
         }

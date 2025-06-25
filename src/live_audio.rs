@@ -10,9 +10,9 @@ use dasp::sample::ToSample;
 use simple_left_right::Reader;
 
 pub(crate) struct LiveAudio {
-    song: Reader<Song<true>>,
-    playback_state: Option<PlaybackState<'static, true>>,
-    live_note: Option<SamplePlayer<'static, true>>,
+    song: Reader<Song>,
+    playback_state: Option<PlaybackState>,
+    live_note: Option<SamplePlayer>,
     manager: rtrb::Consumer<ToWorkerMsg>,
     state_sender: triple_buffer::Input<Option<PlaybackStatus>>,
     config: OutputConfig,
@@ -20,12 +20,13 @@ pub(crate) struct LiveAudio {
     buffer: Box<[Frame]>,
 }
 
+// should probabyl be made configurable at some point
 const INTERPOLATION: u8 = Interpolation::Linear as u8;
 
 impl LiveAudio {
     /// Not realtime safe.
     pub fn new(
-        song: Reader<Song<true>>,
+        song: Reader<Song>,
         manager: rtrb::Consumer<ToWorkerMsg>,
         state_sender: triple_buffer::Input<Option<PlaybackStatus>>,
         config: OutputConfig,
@@ -37,20 +38,22 @@ impl LiveAudio {
             manager,
             state_sender,
             config,
-            buffer: vec![Frame::default(); config.buffer_size.try_into().unwrap()].into(),
+            buffer: vec![Frame::default(); usize::try_from(config.buffer_size).unwrap() * 2].into(),
         }
     }
 
-    #[cfg_attr(feature = "rtsan", rtsan_standalone::nonblocking)]
+    #[rtsan_standalone::nonblocking]
     fn send_state(&mut self) {
         self.state_sender
             .write(self.playback_state.as_ref().map(|s| s.get_status()));
     }
 
-    // #[inline(never)]
-    #[cfg_attr(feature = "rtsan", rtsan_standalone::nonblocking)]
+    #[rtsan_standalone::nonblocking]
     /// returns true if work was done
-    fn fill_internal_buffer(&mut self) -> bool {
+    fn fill_internal_buffer(&mut self, len: usize) -> bool {
+        // the output buffer should be smaller than the internal buffer
+        let buffer = &mut self.buffer[..len];
+
         let song = self.song.lock();
 
         // process manager events
@@ -59,12 +62,13 @@ impl LiveAudio {
                 ToWorkerMsg::StopPlayback => self.playback_state = None,
                 ToWorkerMsg::Playback(settings) => {
                     self.playback_state =
-                        PlaybackState::<true>::new(&song, self.config.sample_rate, settings);
+                        PlaybackState::new(&song, self.config.sample_rate, settings);
                 }
                 ToWorkerMsg::PlayEvent(note) => {
                     if let Some(sample) = &song.samples[usize::from(note.sample_instr)] {
                         let sample_player = SamplePlayer::new(
-                            (sample.0, sample.1.get_handle()),
+                            sample.1.clone(),
+                            sample.0,
                             self.config.sample_rate / 2,
                             note.note,
                         );
@@ -81,12 +85,12 @@ impl LiveAudio {
 
         // clear buffer from past run
         // only happens if there is work todo
-        self.buffer.fill(Frame::default());
+        buffer.fill(Frame::default());
 
         // process live_note
         if let Some(live_note) = &mut self.live_note {
             let note_iter = live_note.iter::<{ INTERPOLATION }>();
-            self.buffer
+            buffer
                 .iter_mut()
                 .zip(note_iter)
                 .for_each(|(buf, note)| buf.add_assign(note));
@@ -96,10 +100,10 @@ impl LiveAudio {
             }
         }
 
-        // // process song playback
+        // process song playback
         if let Some(playback) = &mut self.playback_state {
             let playback_iter = playback.iter::<{ INTERPOLATION }>(&song);
-            self.buffer
+            buffer
                 .iter_mut()
                 .zip(playback_iter)
                 .for_each(|(buf, frame)| buf.add_assign(frame));
@@ -114,7 +118,7 @@ impl LiveAudio {
 
     /// converts the internal buffer to any possible output format and channel count
     /// sums stereo to mono and fills channels 3 and up with silence
-    #[cfg_attr(feature = "rtsan", rtsan_standalone::nonblocking)]
+    #[rtsan_standalone::nonblocking]
     #[inline]
     fn fill_from_internal<Sample: dasp::sample::Sample + dasp::sample::FromSample<f32>>(
         &mut self,
@@ -139,13 +143,14 @@ impl LiveAudio {
         mut self,
     ) -> impl FnMut(&mut [Sample]) {
         move |data| {
+            assert!(self.buffer.len() > data.len());
             // assert_eq!(
             //     data.len(),
             //     usize::try_from(self.config.buffer_size).unwrap()
             //         * usize::from(self.config.channel_count.get())
             // );
 
-            if self.fill_internal_buffer() {
+            if self.fill_internal_buffer(data.len()) {
                 self.fill_from_internal(data);
             }
             self.send_state();
