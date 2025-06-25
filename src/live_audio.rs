@@ -37,20 +37,22 @@ impl LiveAudio {
             manager,
             state_sender,
             config,
-            buffer: vec![Frame::default(); config.buffer_size.try_into().unwrap()].into(),
+            buffer: vec![Frame::default(); usize::try_from(config.buffer_size).unwrap() * 2].into(),
         }
     }
 
-    #[cfg_attr(feature = "rtsan", rtsan_standalone::nonblocking)]
+    #[rtsan_standalone::nonblocking]
     fn send_state(&mut self) {
         self.state_sender
             .write(self.playback_state.as_ref().map(|s| s.get_status()));
     }
 
-    // #[inline(never)]
-    #[cfg_attr(feature = "rtsan", rtsan_standalone::nonblocking)]
+    #[rtsan_standalone::nonblocking]
     /// returns true if work was done
-    fn fill_internal_buffer(&mut self) -> bool {
+    fn fill_internal_buffer(&mut self, len: usize) -> bool {
+        // the output buffer should be smaller than the internal buffer
+        let buffer = &mut self.buffer[..len];
+
         let song = self.song.lock();
 
         // process manager events
@@ -82,12 +84,12 @@ impl LiveAudio {
 
         // clear buffer from past run
         // only happens if there is work todo
-        self.buffer.fill(Frame::default());
+        buffer.fill(Frame::default());
 
         // process live_note
         if let Some(live_note) = &mut self.live_note {
             let note_iter = live_note.iter::<{ INTERPOLATION }>();
-            self.buffer
+            buffer
                 .iter_mut()
                 .zip(note_iter)
                 .for_each(|(buf, note)| buf.add_assign(note));
@@ -97,10 +99,10 @@ impl LiveAudio {
             }
         }
 
-        // // process song playback
+        // process song playback
         if let Some(playback) = &mut self.playback_state {
             let playback_iter = playback.iter::<{ INTERPOLATION }>(&song);
-            self.buffer
+            buffer
                 .iter_mut()
                 .zip(playback_iter)
                 .for_each(|(buf, frame)| buf.add_assign(frame));
@@ -115,7 +117,7 @@ impl LiveAudio {
 
     /// converts the internal buffer to any possible output format and channel count
     /// sums stereo to mono and fills channels 3 and up with silence
-    #[cfg_attr(feature = "rtsan", rtsan_standalone::nonblocking)]
+    #[rtsan_standalone::nonblocking]
     #[inline]
     fn fill_from_internal<Sample: dasp::sample::Sample + dasp::sample::FromSample<f32>>(
         &mut self,
@@ -146,7 +148,7 @@ impl LiveAudio {
             //         * usize::from(self.config.channel_count.get())
             // );
 
-            if self.fill_internal_buffer() {
+            if self.fill_internal_buffer(data.len()) {
                 self.fill_from_internal(data);
             }
             self.send_state();
