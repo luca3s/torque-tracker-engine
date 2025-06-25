@@ -6,8 +6,8 @@ pub mod pattern;
 pub mod song;
 
 #[derive(Clone)]
-pub struct Project<const GC: bool> {
-    pub song: Song<GC>,
+pub struct Project {
+    pub song: Song,
     pub name: String,
     pub description: String,
 }

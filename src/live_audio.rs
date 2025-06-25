@@ -10,9 +10,9 @@ use dasp::sample::ToSample;
 use simple_left_right::Reader;
 
 pub(crate) struct LiveAudio {
-    song: Reader<Song<true>>,
-    playback_state: Option<PlaybackState<'static, true>>,
-    live_note: Option<SamplePlayer<'static, true>>,
+    song: Reader<Song>,
+    playback_state: Option<PlaybackState>,
+    live_note: Option<SamplePlayer>,
     manager: rtrb::Consumer<ToWorkerMsg>,
     state_sender: triple_buffer::Input<Option<PlaybackStatus>>,
     config: OutputConfig,
@@ -25,7 +25,7 @@ const INTERPOLATION: u8 = Interpolation::Linear as u8;
 impl LiveAudio {
     /// Not realtime safe.
     pub fn new(
-        song: Reader<Song<true>>,
+        song: Reader<Song>,
         manager: rtrb::Consumer<ToWorkerMsg>,
         state_sender: triple_buffer::Input<Option<PlaybackStatus>>,
         config: OutputConfig,
@@ -59,12 +59,13 @@ impl LiveAudio {
                 ToWorkerMsg::StopPlayback => self.playback_state = None,
                 ToWorkerMsg::Playback(settings) => {
                     self.playback_state =
-                        PlaybackState::<true>::new(&song, self.config.sample_rate, settings);
+                        PlaybackState::new(&song, self.config.sample_rate, settings);
                 }
                 ToWorkerMsg::PlayEvent(note) => {
                     if let Some(sample) = &song.samples[usize::from(note.sample_instr)] {
                         let sample_player = SamplePlayer::new(
-                            (sample.0, sample.1.get_handle()),
+                            sample.1.clone(),
+                            sample.0,
                             self.config.sample_rate / 2,
                             note.note,
                         );

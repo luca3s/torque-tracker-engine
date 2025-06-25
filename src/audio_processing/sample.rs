@@ -2,7 +2,7 @@ use std::ops::ControlFlow;
 
 use crate::{
     project::note_event::Note,
-    sample::{self, SampleHandle, SampleMetaData},
+    sample::{self, ProcessingFrame, ProcessingFunction, Sample, SampleMetaData},
 };
 
 use super::Frame;
@@ -39,9 +39,9 @@ impl Interpolation {
 }
 
 #[derive(Debug)]
-pub struct SamplePlayer<'sample, const GC: bool> {
-    sample: SampleHandle<'sample, GC>,
-    meta_data: SampleMetaData,
+pub struct SamplePlayer {
+    sample: Sample,
+    meta: SampleMetaData,
 
     note: Note,
     // position in the sample, the next output frame should be.
@@ -57,29 +57,21 @@ pub struct SamplePlayer<'sample, const GC: bool> {
     step_size: f32,
 }
 
-impl<'sample, const GC: bool> SamplePlayer<'sample, GC> {
-    pub fn new(
-        sample: (SampleMetaData, SampleHandle<'sample, GC>),
-        out_rate: u32,
-        note: Note,
-    ) -> Self {
+impl SamplePlayer {
+    pub fn new(sample: Sample, meta: SampleMetaData, out_rate: u32, note: Note) -> Self {
+        let step_size = Self::compute_step_size(meta.sample_rate, out_rate, meta.base_note, note);
         Self {
-            sample: sample.1,
-            meta_data: sample.0,
+            sample,
+            meta,
             position: (sample::PAD_SIZE_EACH, 0.),
             out_rate,
-            step_size: Self::compute_step_size(
-                sample.0.sample_rate,
-                out_rate,
-                sample.0.base_note,
-                note,
-            ),
+            step_size,
             note,
         }
     }
 
     pub fn check_position(&self) -> ControlFlow<()> {
-        if self.position.0 > self.sample.get_ref().len_with_pad() - sample::PAD_SIZE_EACH {
+        if self.position.0 > self.sample.len_with_pad() - sample::PAD_SIZE_EACH {
             ControlFlow::Break(())
         } else {
             ControlFlow::Continue(())
@@ -103,9 +95,9 @@ impl<'sample, const GC: bool> SamplePlayer<'sample, GC> {
 
     fn set_step_size(&mut self) {
         self.step_size = Self::compute_step_size(
-            self.meta_data.sample_rate,
+            self.meta.sample_rate,
             self.out_rate,
-            self.meta_data.base_note,
+            self.meta.base_note,
             self.note,
         );
     }
@@ -126,7 +118,7 @@ impl<'sample, const GC: bool> SamplePlayer<'sample, GC> {
     #[inline]
     pub fn iter<'player, const INTERPOLATION: u8>(
         &'player mut self,
-    ) -> SampleIter<'sample, 'player, GC, INTERPOLATION> {
+    ) -> SampleIter<'player, INTERPOLATION> {
         SampleIter { inner: self }
     }
 
@@ -149,13 +141,16 @@ impl<'sample, const GC: bool> SamplePlayer<'sample, GC> {
     }
 
     fn compute_linear(&mut self) -> Frame {
-        self.sample.get_ref().compute(
-            |data: [f32; 2]| {
+        struct Linear(f32);
+
+        impl<S: ProcessingFrame> ProcessingFunction<2, S> for Linear {
+            fn process(self, data: &[S; 2]) -> S {
                 let diff = data[1] - data[0];
-                (diff * self.position.1) + data[0]
-            },
-            self.position.0,
-        )
+                (diff * self.0) + data[0]
+            }
+        }
+        self.sample
+            .compute(self.position.0, Linear(self.position.1))
     }
 
     fn compute_nearest(&mut self) -> Frame {
@@ -165,15 +160,15 @@ impl<'sample, const GC: bool> SamplePlayer<'sample, GC> {
             self.position.0 + 1
         };
 
-        self.sample.get_ref().index(load_idx)
+        self.sample.index(load_idx)
     }
 }
 
-pub struct SampleIter<'sample, 'player, const GC: bool, const INTERPOLATION: u8> {
-    inner: &'player mut SamplePlayer<'sample, GC>,
+pub struct SampleIter<'player, const INTERPOLATION: u8> {
+    inner: &'player mut SamplePlayer,
 }
 
-impl<const GC: bool, const INTERPOLATION: u8> Iterator for SampleIter<'_, '_, GC, INTERPOLATION> {
+impl<const INTERPOLATION: u8> Iterator for SampleIter<'_, INTERPOLATION> {
     type Item = Frame;
 
     fn next(&mut self) -> Option<Self::Item> {
