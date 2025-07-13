@@ -69,7 +69,9 @@ impl LiveAudio {
                         let sample_player = SamplePlayer::new(
                             sample.1.clone(),
                             sample.0,
-                            self.config.sample_rate / 2,
+                            // why is this div by 2 here
+                            // self.config.sample_rate / 2,
+                            self.config.sample_rate,
                             note.note,
                         );
                         self.live_note = Some(sample_player);

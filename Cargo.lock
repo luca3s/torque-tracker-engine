@@ -707,7 +707,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "torque_tracker_engine"
+name = "torque-tracker-engine"
 version = "0.1.0"
 dependencies = [
  "cpal",

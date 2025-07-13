@@ -1,4 +1,4 @@
-use std::ops::ControlFlow;
+use std::{num::NonZero, ops::ControlFlow};
 
 use crate::{
     audio_processing::{sample::SamplePlayer, Frame},
@@ -108,7 +108,7 @@ pub struct PlaybackState {
     frame: u32,
 
     // add current state to support Effects
-    samplerate: u32,
+    samplerate: NonZero<u32>,
 
     voices: [Option<SamplePlayer>; PlaybackState::VOICES],
 }
@@ -123,8 +123,8 @@ impl PlaybackState {
         PlaybackIter { state: self, song }
     }
 
-    fn frames_per_tick(samplerate: u32, tempo: u8) -> u32 {
-        (samplerate * 10) / u32::from(tempo)
+    fn frames_per_tick(samplerate: NonZero<u32>, tempo: u8) -> u32 {
+        (samplerate.get() * 10) / u32::from(tempo)
     }
 
     pub fn get_status(&self) -> PlaybackStatus {
@@ -134,7 +134,7 @@ impl PlaybackState {
         }
     }
 
-    pub fn set_samplerate(&mut self, samplerate: u32) {
+    pub fn set_samplerate(&mut self, samplerate: NonZero<u32>) {
         self.samplerate = samplerate;
         self.voices
             .iter_mut()
@@ -149,7 +149,7 @@ impl PlaybackState {
 
 impl PlaybackState {
     /// None if the settings in the order variant don't have any pattern to play
-    pub fn new(song: &Song, samplerate: u32, settings: PlaybackSettings) -> Option<Self> {
+    pub fn new(song: &Song, samplerate: NonZero<u32>, settings: PlaybackSettings) -> Option<Self> {
         let mut out = Self {
             position: PlaybackPosition::new(settings, song)?,
             is_done: false,

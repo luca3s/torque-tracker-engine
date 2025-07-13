@@ -1,7 +1,11 @@
-use std::{num::NonZeroU16, time::Duration};
+use std::{
+    num::{NonZero, NonZeroU16},
+    time::Duration,
+};
 
 use cpal::traits::{DeviceTrait, HostTrait};
-use tracker_engine::{
+use torque_tracker_engine::{
+    file::impulse_format::{header::PatternOrder, sample::VibratoWave},
     manager::{AudioManager, OutputConfig, PlaybackSettings, ToWorkerMsg},
     project::{
         event_command::NoteCommand,
@@ -23,9 +27,15 @@ fn main() {
         .map(|result| <f32 as dasp::Sample>::from_sample(result.unwrap()));
     let sample = Sample::new_mono(sample_data);
     let meta = SampleMetaData {
-        sample_rate: spec.sample_rate,
+        sample_rate: NonZero::new(spec.sample_rate).unwrap(),
         base_note: Note::new(64).unwrap(),
-        ..Default::default()
+        default_volume: 20,
+        global_volume: 20,
+        default_pan: None,
+        vibrato_speed: 0,
+        vibrato_depth: 0,
+        vibrato_rate: 0,
+        vibrato_waveform: VibratoWave::default(),
     };
 
     let mut song = manager.try_edit_song().unwrap();
@@ -47,11 +57,8 @@ fn main() {
         song.apply_operation(SongOperation::PatternOperation(0, command))
             .unwrap();
     }
-    song.apply_operation(SongOperation::SetOrder(
-        0,
-        tracker_engine::file::impulse_format::header::PatternOrder::Number(0),
-    ))
-    .unwrap();
+    song.apply_operation(SongOperation::SetOrder(0, PatternOrder::Number(0)))
+        .unwrap();
 
     song.finish();
 
@@ -63,7 +70,7 @@ fn main() {
     let config = OutputConfig {
         buffer_size: 1024,
         channel_count: NonZeroU16::new(2).unwrap(),
-        sample_rate: default_config.sample_rate().0,
+        sample_rate: NonZero::new(default_config.sample_rate().0).unwrap(),
     };
 
     let mut callback = manager.get_callback::<f32>(config);

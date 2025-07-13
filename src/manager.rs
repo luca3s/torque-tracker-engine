@@ -1,4 +1,8 @@
-use std::{fmt::Debug, num::NonZeroU16, time::Duration};
+use std::{
+    fmt::Debug,
+    num::{NonZero, NonZeroU16},
+    time::Duration,
+};
 
 use simple_left_right::{WriteGuard, Writer};
 
@@ -166,7 +170,7 @@ impl AudioManager {
 
         let audio_worker = LiveAudio::new(reader, to_worker.1, from_worker.0, config);
         let buffer_time =
-            Duration::from_millis((config.buffer_size * 1000 / config.buffer_size).into());
+            Duration::from_millis((config.buffer_size * 1000 / config.sample_rate).into());
 
         self.stream_comms = Some(ActiveStreamComms {
             buffer_time,
@@ -231,7 +235,7 @@ impl SongEdit<'_> {
 pub struct OutputConfig {
     pub buffer_size: u32,
     pub channel_count: NonZeroU16,
-    pub sample_rate: u32,
+    pub sample_rate: NonZero<u32>,
 }
 
 #[derive(Debug, Clone, Copy)]

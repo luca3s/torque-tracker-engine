@@ -1,4 +1,4 @@
-use std::ops::ControlFlow;
+use std::{num::NonZero, ops::ControlFlow};
 
 use crate::{
     project::note_event::Note,
@@ -51,14 +51,14 @@ pub struct SamplePlayer {
     // f32 ranges 0..1
     position: (usize, f32),
     // is_done: bool,
-    out_rate: u32,
+    out_rate: NonZero<u32>,
     // how much the position is advanced for each output sample.
     // computed from in and out rate
     step_size: f32,
 }
 
 impl SamplePlayer {
-    pub fn new(sample: Sample, meta: SampleMetaData, out_rate: u32, note: Note) -> Self {
+    pub fn new(sample: Sample, meta: SampleMetaData, out_rate: NonZero<u32>, note: Note) -> Self {
         let step_size = Self::compute_step_size(meta.sample_rate, out_rate, meta.base_note, note);
         Self {
             sample,
@@ -80,8 +80,8 @@ impl SamplePlayer {
 
     #[inline]
     fn compute_step_size(
-        in_rate: u32,
-        out_rate: u32,
+        in_rate: NonZero<u32>,
+        out_rate: NonZero<u32>,
         sample_base_note: Note,
         playing_note: Note,
     ) -> f32 {
@@ -90,7 +90,7 @@ impl SamplePlayer {
         // manually reduced formula: 2^((play_note - sample_base_note)/12) * (outrate / inrate)
         // herbie (https://herbie.uwplse.org/demo/index.html) can't optimize further: https://herbie.uwplse.org/demo/e096ef89ee257ad611dd56378bd139a065a6bea0.02e7ec5a3709ad3e06968daa97db50d636f1e44b/graph.html
         (f32::from(i16::from(playing_note.get()) - i16::from(sample_base_note.get())) / 12.).exp2()
-            * (out_rate as f32 / in_rate as f32)
+            * (out_rate.get() as f32 / in_rate.get() as f32)
     }
 
     fn set_step_size(&mut self) {
@@ -102,7 +102,7 @@ impl SamplePlayer {
         );
     }
 
-    pub fn set_out_samplerate(&mut self, samplerate: u32) {
+    pub fn set_out_samplerate(&mut self, samplerate: NonZero<u32>) {
         self.out_rate = samplerate;
         self.set_step_size();
     }
@@ -137,8 +137,10 @@ impl SamplePlayer {
     }
 
     fn compute_linear(&mut self) -> Frame {
+        // There are two types that implement ProcessingFrame: f32 and Frame, so stereo and mono audio data.
+        // the compiler will monomorphize this function to both versions and depending on wether that sample is mono
+        // or stereo the correct version will be called.
         struct Linear(f32);
-
         impl<S: ProcessingFrame> ProcessingFunction<2, S> for Linear {
             fn process(self, data: &[S; 2]) -> S {
                 let diff = data[1] - data[0];
