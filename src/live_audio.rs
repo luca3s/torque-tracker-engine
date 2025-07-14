@@ -6,6 +6,7 @@ use crate::audio_processing::sample::SamplePlayer;
 use crate::audio_processing::Frame;
 use crate::manager::{OutputConfig, ToWorkerMsg};
 use crate::project::song::Song;
+use crate::sample::Sample;
 use dasp::sample::ToSample;
 use simple_left_right::Reader;
 
@@ -67,10 +68,9 @@ impl LiveAudio {
                 ToWorkerMsg::PlayEvent(note) => {
                     if let Some(sample) = &song.samples[usize::from(note.sample_instr)] {
                         let sample_player = SamplePlayer::new(
-                            sample.1.clone(),
+                            Sample::clone(&sample.1),
                             sample.0,
-                            // why is this div by 2 here
-                            // self.config.sample_rate / 2,
+                            // this at some point was divided by two, if i ever figure out why, maybe put it back
                             self.config.sample_rate,
                             note.note,
                         );
@@ -145,14 +145,17 @@ impl LiveAudio {
         mut self,
     ) -> impl FnMut(&mut [Sample]) {
         move |data| {
-            assert!(self.buffer.len() > data.len());
+            let channel_count = usize::from(self.config.channel_count.get());
+            assert!(data.len().is_multiple_of(channel_count));
+            let out_frames = data.len() / channel_count;
+            assert!(self.buffer.len() > out_frames);
             // assert_eq!(
             //     data.len(),
             //     usize::try_from(self.config.buffer_size).unwrap()
             //         * usize::from(self.config.channel_count.get())
             // );
 
-            if self.fill_internal_buffer(data.len()) {
+            if self.fill_internal_buffer(out_frames) {
                 self.fill_from_internal(data);
             }
             self.send_state();
