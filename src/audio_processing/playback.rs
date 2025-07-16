@@ -124,7 +124,8 @@ impl PlaybackState {
     }
 
     fn frames_per_tick(samplerate: NonZero<u32>, tempo: u8) -> u32 {
-        (samplerate.get() * 10) / u32::from(tempo)
+        // don't ask me why times 2. it just does the same as schism now
+        (samplerate.get() * 2) / u32::from(tempo)
     }
 
     pub fn get_status(&self) -> PlaybackStatus {
