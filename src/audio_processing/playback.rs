@@ -232,6 +232,7 @@ impl<const INTERPOLATION: u8> Iterator for PlaybackIter<'_, '_, INTERPOLATION> {
 
 impl<const INTERPOLATION: u8> PlaybackIter<'_, '_, INTERPOLATION> {
     fn step(&mut self) {
+        // the current speed is a bit off from schism tracker. i don't know why, how much or in which direction.
         if self.state.frame > 0 {
             self.state.frame -= 1;
             return;

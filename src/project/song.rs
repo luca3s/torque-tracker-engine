@@ -9,14 +9,13 @@ use crate::file::impulse_format::header::PatternOrder;
 use crate::manager::Collector;
 use crate::sample::{Sample, SampleMetaData};
 
-/// Playback Speed in Schism is determined by two values: Tempo and Speed.
-/// Speed specifies how many ticks are in one row. This reduces tempo, but increases resolution of some effects.
-/// Tempo determines how many ticks are in one second with the following formula: tempo/10 = ticks per second.
 #[derive(Clone, Debug)]
 pub struct Song {
     pub global_volume: u8,
     pub mix_volume: u8,
+    /// Speed specifies how many ticks are in one row. This reduces tempo, but increases resolution of some effects.
     pub initial_speed: NonZero<u8>,
+    /// Tempo determines how many ticks are in one second with the following formula: tempo/2 = ticks per second.
     pub initial_tempo: NonZero<u8>,
     pub pan_separation: u8,
     pub pitch_wheel_depth: u8,
@@ -176,7 +175,7 @@ impl ValidOperation {
                 }
                 SongOperation::SetOrder(i, pattern_order) => Self::SetOrder(i, pattern_order),
                 SongOperation::SetInitialSpeed(s) => Self::SetInitialSpeed(s),
-                SongOperation::SetInitialTempo(t) => Self::SetInitialSpeed(t),
+                SongOperation::SetInitialTempo(t) => Self::SetInitialTempo(t),
             })
         } else {
             Err(op)
