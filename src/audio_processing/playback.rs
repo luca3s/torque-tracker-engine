@@ -123,9 +123,9 @@ impl PlaybackState {
         PlaybackIter { state: self, song }
     }
 
-    fn frames_per_tick(samplerate: NonZero<u32>, tempo: u8) -> u32 {
+    fn frames_per_tick(samplerate: NonZero<u32>, tempo: NonZero<u8>) -> u32 {
         // don't ask me why times 2. it just does the same as schism now
-        (samplerate.get() * 2) / u32::from(tempo)
+        (samplerate.get() * 2) / u32::from(tempo.get())
     }
 
     pub fn get_status(&self) -> PlaybackStatus {
@@ -154,7 +154,7 @@ impl PlaybackState {
         let mut out = Self {
             position: PlaybackPosition::new(settings, song)?,
             is_done: false,
-            tick: song.initial_speed,
+            tick: song.initial_speed.get(),
             frame: Self::frames_per_tick(samplerate, song.initial_tempo),
             samplerate,
             voices: std::array::from_fn(|_| None),
@@ -243,7 +243,7 @@ impl<const INTERPOLATION: u8> PlaybackIter<'_, '_, INTERPOLATION> {
             self.state.tick -= 1;
             return;
         } else {
-            self.state.tick = self.song.initial_speed;
+            self.state.tick = self.song.initial_speed.get();
         }
 
         match self.state.position.step_row(self.song) {

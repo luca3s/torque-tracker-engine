@@ -1,5 +1,6 @@
 use std::array;
 use std::fmt::{Debug, Formatter};
+use std::num::NonZero;
 
 use super::pattern::{Pattern, PatternOperation};
 use crate::channel::Pan;
@@ -15,8 +16,8 @@ use crate::sample::{Sample, SampleMetaData};
 pub struct Song {
     pub global_volume: u8,
     pub mix_volume: u8,
-    pub initial_speed: u8,
-    pub initial_tempo: u8,
+    pub initial_speed: NonZero<u8>,
+    pub initial_tempo: NonZero<u8>,
     pub pan_separation: u8,
     pub pitch_wheel_depth: u8,
 
@@ -57,8 +58,9 @@ impl Song {
     /// Samples, patterns, instruments are not filled as they are not included in the header
     pub fn copy_values_from_header(&mut self, header: &impulse_format::header::ImpulseHeader) {
         self.global_volume = header.global_volume;
-        self.initial_speed = header.initial_speed;
-        self.initial_tempo = header.initial_tempo;
+        // TODO: figure out if i want to error here or when parsing the header
+        self.initial_speed = NonZero::new(header.initial_speed).unwrap();
+        self.initial_tempo = NonZero::new(header.initial_tempo).unwrap();
         self.mix_volume = header.mix_volume;
         self.pan_separation = header.pan_separation;
         self.pitch_wheel_depth = header.pitch_wheel_depth;
@@ -101,8 +103,8 @@ impl Default for Song {
         Self {
             global_volume: 128,
             mix_volume: Default::default(),
-            initial_speed: 6,
-            initial_tempo: 125,
+            initial_speed: NonZero::new(6).unwrap(),
+            initial_tempo: NonZero::new(125).unwrap(),
             pan_separation: 128,
             pitch_wheel_depth: Default::default(),
             patterns: array::from_fn(|_| Pattern::default()),
@@ -123,6 +125,8 @@ pub enum SongOperation {
     RemoveSample(usize),
     PatternOperation(usize, PatternOperation),
     SetOrder(usize, PatternOrder),
+    SetInitialSpeed(NonZero<u8>),
+    SetInitialTempo(NonZero<u8>),
 }
 
 /// keep in sync with SongOperation
@@ -134,6 +138,8 @@ pub(crate) enum ValidOperation {
     RemoveSample(usize),
     PatternOperation(usize, PatternOperation),
     SetOrder(usize, PatternOrder),
+    SetInitialSpeed(NonZero<u8>),
+    SetInitialTempo(NonZero<u8>),
 }
 
 impl ValidOperation {
@@ -152,6 +158,8 @@ impl ValidOperation {
                 None => false,
             },
             SongOperation::SetOrder(idx, _) => idx < Song::MAX_ORDERS,
+            SongOperation::SetInitialSpeed(_) => true,
+            SongOperation::SetInitialTempo(_) => true,
         };
 
         if valid {
@@ -167,6 +175,8 @@ impl ValidOperation {
                     Self::PatternOperation(i, pattern_operation)
                 }
                 SongOperation::SetOrder(i, pattern_order) => Self::SetOrder(i, pattern_order),
+                SongOperation::SetInitialSpeed(s) => Self::SetInitialSpeed(s),
+                SongOperation::SetInitialTempo(t) => Self::SetInitialSpeed(t),
             })
         } else {
             Err(op)
@@ -183,6 +193,8 @@ impl simple_left_right::Absorb<ValidOperation> for Song {
             ValidOperation::RemoveSample(i) => self.samples[i] = None,
             ValidOperation::PatternOperation(i, op) => self.patterns[i].apply_operation(op),
             ValidOperation::SetOrder(i, order) => self.pattern_order[i] = order,
+            ValidOperation::SetInitialSpeed(s) => self.initial_speed = s,
+            ValidOperation::SetInitialTempo(t) => self.initial_tempo = t,
         }
     }
 }
