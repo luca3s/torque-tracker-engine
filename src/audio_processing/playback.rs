@@ -196,11 +196,15 @@ impl<const INTERPOLATION: u8> Iterator for PlaybackIter<'_, '_, INTERPOLATION> {
     type Item = Frame;
 
     fn next(&mut self) -> Option<Self::Item> {
+        fn scale_vol(vol: u8) -> f32 {
+            (vol as f32) / (u8::MAX as f32)
+        }
+
         if self.state.is_done {
             return None;
         }
 
-        let out = self
+        let out: Frame = self
             .state
             .voices
             .iter_mut()
@@ -226,7 +230,8 @@ impl<const INTERPOLATION: u8> Iterator for PlaybackIter<'_, '_, INTERPOLATION> {
             })
             .sum();
         self.step();
-        Some(out)
+        let out_vol = scale_vol(self.song.global_volume);
+        Some(out * out_vol)
     }
 }
 

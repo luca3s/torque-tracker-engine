@@ -126,6 +126,7 @@ pub enum SongOperation {
     SetOrder(usize, PatternOrder),
     SetInitialSpeed(NonZero<u8>),
     SetInitialTempo(NonZero<u8>),
+    SetGlobalVol(u8),
 }
 
 /// keep in sync with SongOperation
@@ -139,6 +140,7 @@ pub(crate) enum ValidOperation {
     SetOrder(usize, PatternOrder),
     SetInitialSpeed(NonZero<u8>),
     SetInitialTempo(NonZero<u8>),
+    SetGlobalVol(u8),
 }
 
 impl ValidOperation {
@@ -159,6 +161,7 @@ impl ValidOperation {
             SongOperation::SetOrder(idx, _) => idx < Song::MAX_ORDERS,
             SongOperation::SetInitialSpeed(_) => true,
             SongOperation::SetInitialTempo(_) => true,
+            SongOperation::SetGlobalVol(_) => true,
         };
 
         if valid {
@@ -176,6 +179,7 @@ impl ValidOperation {
                 SongOperation::SetOrder(i, pattern_order) => Self::SetOrder(i, pattern_order),
                 SongOperation::SetInitialSpeed(s) => Self::SetInitialSpeed(s),
                 SongOperation::SetInitialTempo(t) => Self::SetInitialTempo(t),
+                SongOperation::SetGlobalVol(v) => Self::SetGlobalVol(v),
             })
         } else {
             Err(op)
@@ -194,6 +198,7 @@ impl simple_left_right::Absorb<ValidOperation> for Song {
             ValidOperation::SetOrder(i, order) => self.pattern_order[i] = order,
             ValidOperation::SetInitialSpeed(s) => self.initial_speed = s,
             ValidOperation::SetInitialTempo(t) => self.initial_tempo = t,
+            ValidOperation::SetGlobalVol(v) => self.global_volume = v,
         }
     }
 }
