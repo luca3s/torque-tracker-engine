@@ -114,7 +114,8 @@ pub struct PlaybackState {
 }
 
 impl PlaybackState {
-    pub const VOICES: usize = 256;
+    // i don't know yet why those would be different. Splitting them up probably be a bit of work.
+    pub const VOICES: usize = Song::MAX_CHANNELS;
 
     pub fn iter<'playback, 'song, const INTERPOLATION: u8>(
         &'playback mut self,
@@ -204,18 +205,22 @@ impl<const INTERPOLATION: u8> Iterator for PlaybackIter<'_, '_, INTERPOLATION> {
             return None;
         }
 
+        assert!(self.song.volume.len() == self.state.voices.len());
+
         let out: Frame = self
             .state
             .voices
             .iter_mut()
-            .flat_map(|channel| {
+            .zip(self.song.volume)
+            .flat_map(|(channel, vol)| {
                 if let Some(voice) = channel {
                     // this logic removes the voices as soon as possible
                     let out = voice.next::<INTERPOLATION>().unwrap();
                     if voice.check_position().is_break() {
                         *channel = None;
                     }
-                    Some(out)
+                    let channel_vol = scale_vol(vol);
+                    Some(out * channel_vol)
                     // this logic frees the voices one frame later than possible
                     // match voice.next::<INTERPOLATION>() {
                     //     Some(frame) => Some(frame),
