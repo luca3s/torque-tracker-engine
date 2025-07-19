@@ -35,7 +35,7 @@ impl Song {
 
     /// order value shouldn't be modified outside of this function.
     /// This moves it forward correctly and returns the pattern to be played
-    pub fn next_pattern(&self, order: &mut usize) -> Option<u8> {
+    pub fn next_pattern(&self, order: &mut u16) -> Option<u8> {
         loop {
             match self.get_order(*order) {
                 PatternOrder::Number(pattern) => break Some(pattern),
@@ -47,8 +47,11 @@ impl Song {
     }
 
     /// out of bounds is EndOfSong
-    pub(crate) fn get_order(&self, order: usize) -> PatternOrder {
-        self.pattern_order.get(order).copied().unwrap_or_default()
+    pub(crate) fn get_order(&self, order: u16) -> PatternOrder {
+        self.pattern_order
+            .get(usize::from(order))
+            .copied()
+            .unwrap_or_default()
     }
 
     /// takes the values that are included in Song from the header and write them to the song.
@@ -118,12 +121,12 @@ impl Default for Song {
 // On change: also change ValidOperation
 #[derive(Clone, Debug)]
 pub enum SongOperation {
-    SetVolume(usize, u8),
-    SetPan(usize, Pan),
-    SetSample(usize, SampleMetaData, Sample),
-    RemoveSample(usize),
-    PatternOperation(usize, PatternOperation),
-    SetOrder(usize, PatternOrder),
+    SetVolume(u8, u8),
+    SetPan(u8, Pan),
+    SetSample(u8, SampleMetaData, Sample),
+    RemoveSample(u8),
+    PatternOperation(u8, PatternOperation),
+    SetOrder(u16, PatternOrder),
     SetInitialSpeed(NonZero<u8>),
     SetInitialTempo(NonZero<u8>),
     SetGlobalVol(u8),
@@ -132,12 +135,12 @@ pub enum SongOperation {
 /// keep in sync with SongOperation
 #[derive(Clone, Debug)]
 pub(crate) enum ValidOperation {
-    SetVolume(usize, u8),
-    SetPan(usize, Pan),
-    SetSample(usize, SampleMetaData, Sample),
-    RemoveSample(usize),
-    PatternOperation(usize, PatternOperation),
-    SetOrder(usize, PatternOrder),
+    SetVolume(u8, u8),
+    SetPan(u8, Pan),
+    SetSample(u8, SampleMetaData, Sample),
+    RemoveSample(u8),
+    PatternOperation(u8, PatternOperation),
+    SetOrder(u16, PatternOrder),
     SetInitialSpeed(NonZero<u8>),
     SetInitialTempo(NonZero<u8>),
     SetGlobalVol(u8),
@@ -150,15 +153,15 @@ impl ValidOperation {
         song: &Song,
     ) -> Result<ValidOperation, SongOperation> {
         let valid = match op {
-            SongOperation::SetVolume(c, _) => c < Song::MAX_CHANNELS,
-            SongOperation::SetPan(c, _) => c < Song::MAX_CHANNELS,
-            SongOperation::SetSample(idx, _, _) => idx < Song::MAX_SAMPLES_INSTR,
-            SongOperation::RemoveSample(idx) => idx < Song::MAX_SAMPLES_INSTR,
-            SongOperation::PatternOperation(idx, op) => match song.patterns.get(idx) {
+            SongOperation::SetVolume(c, _) => usize::from(c) < Song::MAX_CHANNELS,
+            SongOperation::SetPan(c, _) => usize::from(c) < Song::MAX_CHANNELS,
+            SongOperation::SetSample(idx, _, _) => usize::from(idx) < Song::MAX_SAMPLES_INSTR,
+            SongOperation::RemoveSample(idx) => usize::from(idx) < Song::MAX_SAMPLES_INSTR,
+            SongOperation::PatternOperation(idx, op) => match song.patterns.get(usize::from(idx)) {
                 Some(pattern) => pattern.operation_is_valid(&op),
                 None => false,
             },
-            SongOperation::SetOrder(idx, _) => idx < Song::MAX_ORDERS,
+            SongOperation::SetOrder(idx, _) => usize::from(idx) < Song::MAX_ORDERS,
             SongOperation::SetInitialSpeed(_) => true,
             SongOperation::SetInitialTempo(_) => true,
             SongOperation::SetGlobalVol(_) => true,
@@ -190,12 +193,16 @@ impl ValidOperation {
 impl simple_left_right::Absorb<ValidOperation> for Song {
     fn absorb(&mut self, operation: ValidOperation) {
         match operation {
-            ValidOperation::SetVolume(i, val) => self.volume[i] = val,
-            ValidOperation::SetPan(i, val) => self.pan[i] = val,
-            ValidOperation::SetSample(i, meta, sample) => self.samples[i] = Some((meta, sample)),
-            ValidOperation::RemoveSample(i) => self.samples[i] = None,
-            ValidOperation::PatternOperation(i, op) => self.patterns[i].apply_operation(op),
-            ValidOperation::SetOrder(i, order) => self.pattern_order[i] = order,
+            ValidOperation::SetVolume(i, val) => self.volume[usize::from(i)] = val,
+            ValidOperation::SetPan(i, val) => self.pan[usize::from(i)] = val,
+            ValidOperation::SetSample(i, meta, sample) => {
+                self.samples[usize::from(i)] = Some((meta, sample))
+            }
+            ValidOperation::RemoveSample(i) => self.samples[usize::from(i)] = None,
+            ValidOperation::PatternOperation(i, op) => {
+                self.patterns[usize::from(i)].apply_operation(op)
+            }
+            ValidOperation::SetOrder(i, order) => self.pattern_order[usize::from(i)] = order,
             ValidOperation::SetInitialSpeed(s) => self.initial_speed = s,
             ValidOperation::SetInitialTempo(t) => self.initial_tempo = t,
             ValidOperation::SetGlobalVol(v) => self.global_volume = v,

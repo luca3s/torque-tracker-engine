@@ -8,7 +8,7 @@ use crate::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlaybackStatus {
-    position: PlaybackPosition,
+    pub position: PlaybackPosition,
     // which sample is playing,
     // which how far along is each sample
     // which channel is playing
@@ -18,8 +18,8 @@ pub struct PlaybackStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlaybackPosition {
     /// changes behaviour on pattern end and loop behaviour
-    pub order: Option<usize>,
-    pub pattern: usize,
+    pub order: Option<u16>,
+    pub pattern: u8,
     pub row: u16,
     /// if order is Some this loops the whole song, otherwise it loops the set pattern
     pub loop_active: bool,
@@ -29,7 +29,7 @@ impl PlaybackPosition {
     #[inline]
     fn step_row(&mut self, song: &Song) -> ControlFlow<()> {
         self.row += 1;
-        if self.row >= song.patterns[self.pattern].row_count() {
+        if self.row >= song.patterns[usize::from(self.pattern)].row_count() {
             // reset row count
             self.row = 0;
             // compute next pattern
@@ -37,7 +37,7 @@ impl PlaybackPosition {
                 // next pattern according to song orderlist
                 if let Some(pattern) = song.next_pattern(order) {
                     // song not finished yet
-                    self.pattern = pattern.into();
+                    self.pattern = pattern;
                     ControlFlow::Continue(())
                 } else {
                     // song is finished
@@ -49,7 +49,7 @@ impl PlaybackPosition {
                     // need to check if the song is empty now.
                     *order = 0;
                     if let Some(pattern) = song.next_pattern(order) {
-                        self.pattern = pattern.into();
+                        self.pattern = pattern;
                         ControlFlow::Continue(())
                     } else {
                         // the song is empty, so playback is stopped
@@ -73,7 +73,8 @@ impl PlaybackPosition {
     fn new(settings: PlaybackSettings, song: &Song) -> Option<Self> {
         match settings {
             PlaybackSettings::Pattern { idx, should_loop } => {
-                if idx < song.patterns.len() {
+                // doesn't panic. patterns len is a constant
+                if idx < u8::try_from(song.patterns.len()).unwrap() {
                     Some(Self {
                         order: None,
                         pattern: idx,
@@ -91,7 +92,7 @@ impl PlaybackPosition {
                 let pattern = song.next_pattern(&mut idx)?;
                 Some(Self {
                     order: Some(idx),
-                    pattern: pattern.into(),
+                    pattern,
                     row: 0,
                     loop_active: should_loop,
                 })
@@ -264,7 +265,7 @@ impl<const INTERPOLATION: u8> PlaybackIter<'_, '_, INTERPOLATION> {
     }
     fn create_sample_players(&mut self) {
         for (position, event) in
-            &self.song.patterns[self.state.position.pattern][self.state.position.row]
+            &self.song.patterns[usize::from(self.state.position.pattern)][self.state.position.row]
         {
             if let Some((meta, ref sample)) = self.song.samples[usize::from(event.sample_instr)] {
                 let player =

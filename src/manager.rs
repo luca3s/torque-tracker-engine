@@ -240,15 +240,6 @@ pub struct OutputConfig {
 
 #[derive(Debug, Clone, Copy)]
 pub enum PlaybackSettings {
-    Pattern { idx: usize, should_loop: bool },
-    Order { idx: usize, should_loop: bool },
-}
-
-impl Default for PlaybackSettings {
-    fn default() -> Self {
-        Self::Order {
-            idx: 0,
-            should_loop: false,
-        }
-    }
+    Pattern { idx: u8, should_loop: bool },
+    Order { idx: u16, should_loop: bool },
 }
