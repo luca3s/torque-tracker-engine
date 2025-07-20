@@ -111,4 +111,26 @@ impl Frame {
     pub fn to_raw<'a>(into: &mut [Self]) -> &'a mut [[f32; 2]] {
         unsafe { std::mem::transmute(into) }
     }
+
+    // pan laws taken from: https://www.cs.cmu.edu/~music/icm-online/readings/panlaws/index.html
+
+    // /// angle in radians between 0 and 90°
+    // pub fn pan_linear(&mut self, angle: f32) {
+    //     self.0[0] *= (std::f32::consts::FRAC_PI_2 - angle) * std::f32::consts::FRAC_2_PI;
+    //     self.0[1] *= angle * std::f32::consts::FRAC_2_PI;
+    // }
+
+    /// angle in radians between 0 and 90°
+    pub fn pan_constant_power(&mut self, angle: f32) {
+        self.0[0] *= angle.cos();
+        self.0[1] *= angle.sin();
+    }
+
+    // /// angle in radians between 0 and 90°
+    // pub fn pan_compromise(&mut self, angle: f32) {
+    //     self.0[0] *= f32::sqrt(
+    //         (std::f32::consts::FRAC_PI_2 - angle) * std::f32::consts::FRAC_2_PI * angle.cos(),
+    //     );
+    //     self.0[1] *= f32::sqrt(angle * std::f32::consts::FRAC_2_PI * angle.sin());
+    // }
 }

@@ -2,6 +2,7 @@ use std::{num::NonZero, ops::ControlFlow};
 
 use crate::{
     audio_processing::{sample::SamplePlayer, Frame},
+    channel::Pan,
     manager::PlaybackSettings,
     project::song::Song,
 };
@@ -202,25 +203,38 @@ impl<const INTERPOLATION: u8> Iterator for PlaybackIter<'_, '_, INTERPOLATION> {
             (vol as f32) / (u8::MAX as f32)
         }
 
+        /// scale from 0..=64 to 0°..=90° in radians
+        fn scale_pan(pan: u8) -> f32 {
+            debug_assert!((0..=64).contains(&pan));
+            (pan as f32) * const { (1. / 64.) * (std::f32::consts::FRAC_PI_2) }
+        }
+
         if self.state.is_done {
             return None;
         }
 
-        assert!(self.song.volume.len() == self.state.voices.len());
+        debug_assert!(self.song.volume.len() == self.state.voices.len());
+        debug_assert!(self.song.pan.len() == self.state.voices.len());
 
         let out: Frame = self
             .state
             .voices
             .iter_mut()
             .zip(self.song.volume)
-            .flat_map(|(channel, vol)| {
+            .zip(self.song.pan)
+            .flat_map(|((channel, vol), pan)| {
                 if let Some(voice) = channel {
+                    let mut out = voice.next::<INTERPOLATION>().unwrap();
                     // this logic removes the voices as soon as possible
-                    let out = voice.next::<INTERPOLATION>().unwrap();
                     if voice.check_position().is_break() {
                         *channel = None;
                     }
+                    // add volume and panning
                     let channel_vol = scale_vol(vol);
+                    if let Pan::Value(pan) = pan {
+                        let angle = scale_pan(pan);
+                        out.pan_constant_power(angle);
+                    }
                     Some(out * channel_vol)
                     // this logic frees the voices one frame later than possible
                     // match voice.next::<INTERPOLATION>() {
