@@ -2,11 +2,10 @@
 name = "torque-tracker-engine"
 version = "0.1.0"
 edition = "2021"
-authors = ["Lucas Baumann <dev@lucasbaumann.de>"]
+authors = ["Lucas Baumann"]
 rust-version = "1.87"
 license = "MPL-2.0"
-description = "Audio Backend of my reimplementation of Schismtracker."
-readme = "README.md"
+description = "Audio Backend for Torque Tracker, an old school music tracker"
 keywords = ["audio"]
 categories = ["audio"]
 
