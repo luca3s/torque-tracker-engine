@@ -6,8 +6,8 @@ authors = ["Lucas Baumann"]
 rust-version = "1.87"
 license = "MPL-2.0"
 description = "Audio Backend for Torque Tracker, an old school music tracker"
-keywords = ["audio"]
-categories = ["audio"]
+keywords = ["audio", "interactive"]
+categories = ["multimedia::audio"]
 repository = "https://tangled.sh/did:plc:54jgbo4psy24qu2bk4njtpc4/torque-tracker-engine"
 
 [dependencies]
